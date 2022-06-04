@@ -62,7 +62,7 @@ export default async function (nameArg?: string, template?: string) {
 
   // download template
   console.log("Downloading template, this might take a moment...");
-  const repo = isCanary ? "ije/aleph-canary" : "alephjs/aleph.js";
+  const repo = isCanary ? "ije/aleph-canary" : "xuybin/alephjs";
   const resp = await fetch(`https://codeload.github.com/${repo}/tar.gz/refs/tags/${VERSION}`);
   const gzData = await readAll(new Buffer(await resp.arrayBuffer()));
   const tarData = gunzip(gzData);
@@ -225,7 +225,7 @@ jobs:
     `${dim("▲")} deno task build  ${dim("# build the app into a worker for serverless platforms like Deno Deploy")}`,
     "",
     `Docs: ${cyan("https://alephjs.org/docs")}`,
-    `Bugs: ${cyan("https://alephjs.org.com/alephjs/aleph.js/issues")}`,
+    `Bugs: ${cyan("https://alephjs.org.com/xuybin/alephjs/issues")}`,
     "",
   ].join("\n"));
   Deno.exit(0);
