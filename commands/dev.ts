@@ -107,7 +107,7 @@ if (import.meta.main) {
   log.info(`Watching files for changes...`);
   watchFs(cwd, async (kind, path) => {
     log.info(`kind:${kind} path:${path}`);
-    const specifier = "./" + relative(cwd, path);
+    const specifier = "./" + relative(cwd, path).replace("\\", "/");
     const clientDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_CLIENT_DEP_GRAPH");
     const serverDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_SERVER_DEP_GRAPH");
     if (kind === "remove") {
