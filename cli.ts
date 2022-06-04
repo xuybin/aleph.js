@@ -21,10 +21,10 @@ const helpMessage = `${bold("Aleph.js")} v${VERSION}
 The Full-stack Framework in Deno.
 
 Docs: https://alephjs.org/docs
-Bugs: https://github.com/alephjs/aleph.js/issues
+Bugs: https://github.com/xuybin/alephjs/issues
 
 Usage:
-    deno run -A https://deno.land/x/aleph/cli.ts <command> [...options]
+    deno run -A https://deno.land/x/alephjs/cli.ts <command> [...options]
 
 Commands:
     ${commandsFmt}
@@ -105,7 +105,7 @@ async function main() {
       port: 2020,
       workingDir: Deno.cwd(),
       onListenSuccess: (port) => {
-        console.debug(dim("DEBUG"), `Proxy https://deno.land/x/aleph on http://localhost:${port}`);
+        console.debug(dim("DEBUG"), `Proxy https://deno.land/x/alephjs on http://localhost:${port}`);
       },
     });
   } else {
@@ -120,7 +120,7 @@ async function main() {
         for (const key in importMap.imports) {
           const url = importMap.imports[key];
           if (
-            /\/\/deno\.land\/x\/aleph(_canary)?@v?\d+\.\d+\.\d+(-[a-z0-9\.]+)?\//.test(url)
+            /\/\/deno\.land\/x\/alephjs(_canary)?@v?\d+\.\d+\.\d+(-[a-z0-9\.]+)?\//.test(url)
           ) {
             const [prefix, rest] = util.splitBy(url, "@");
             const [ver, suffix] = util.splitBy(rest, "/");

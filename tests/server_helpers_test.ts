@@ -22,15 +22,15 @@ Deno.test("server/helper.ts", async (t) => {
     const importMap = {
       __filename: "",
       imports: {
-        "aleph": "https://deno.land/x/aleph/mod.ts",
-        "aleph/": "https://deno.land/x/aleph/",
+        "aleph": "https://deno.land/x/alephjs/mod.ts",
+        "aleph/": "https://deno.land/x/alephjs/",
       },
       scopes: {},
     };
-    assertEquals(applyImportMap("aleph", importMap), "https://deno.land/x/aleph/mod.ts");
+    assertEquals(applyImportMap("aleph", importMap), "https://deno.land/x/alephjs/mod.ts");
     assertEquals(
       applyImportMap("aleph/framework/react/mod.ts", importMap),
-      "https://deno.land/x/aleph/framework/react/mod.ts",
+      "https://deno.land/x/alephjs/framework/react/mod.ts",
     );
   });
 });
