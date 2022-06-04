@@ -106,7 +106,6 @@ if (import.meta.main) {
 
   log.info(`Watching files for changes...`);
   watchFs(cwd, async (kind, path) => {
-    log.info(`kind:${kind} path:${path}`);
     const specifier = "./" + relative(cwd, path).replaceAll("\\", "/");
     const clientDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_CLIENT_DEP_GRAPH");
     const serverDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_SERVER_DEP_GRAPH");
@@ -159,7 +158,6 @@ if (import.meta.main) {
         }
       }
       emitters.forEach((e) => {
-        log.info(`modify:${specifier} e:${JSON.stringify(e)}`);
         e.emit(`modify:${specifier}`, { specifier });
         if (e.all.has(`hotUpdate:${specifier}`)) {
           e.emit(`hotUpdate:${specifier}`, { specifier });
