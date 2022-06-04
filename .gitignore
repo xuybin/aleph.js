@@ -4,3 +4,4 @@
 examples/**/dist/
 examples/**/pkg/
 examples/**/target/
+dist/

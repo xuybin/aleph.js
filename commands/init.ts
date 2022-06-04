@@ -82,7 +82,7 @@ export default async function (nameArg?: string, template?: string) {
     }
   }
 
-  const pkgName = isCanary ? "aleph_canary" : "aleph";
+  const pkgName = isCanary ? "aleph_canary" : "alephjs";
   const alephPkgUri = `https://deno.land/x/${pkgName}@${VERSION}`;
   const importMap = {
     imports: {
