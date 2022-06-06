@@ -51,7 +51,7 @@ import { Link } from "aleph/vue";
             <circle mask="url(#a)" cx="262" cy="203" r="16" />
           </svg>
         </a>
-        <a href="https://github.com/alephjs/aleph.js" :style='{ fontSize: "20px", color: "#454545", }'>
+        <a href="https://github.com/xuybin/alephjs" :style='{ fontSize: "20px", color: "#454545", }'>
           <svg viewBox="0 0 1024 1024" :style='{ width: "1em", height: "1em", }' fill="currentColor">
             <title>Github</title>
             <path

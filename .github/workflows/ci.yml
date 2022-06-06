@@ -129,7 +129,7 @@ jobs:
 
       - name: Build App
         env:
-          ALEPH_PKG_URI: https://raw.githubusercontent.com/alephjs/aleph.js/${{ github.sha }}
+          ALEPH_PKG_URI: https://raw.githubusercontent.com/xuybin/alephjs/${{ github.sha }}
         run: deno task build ${{ matrix.dir }}
 
       - name: Clean up

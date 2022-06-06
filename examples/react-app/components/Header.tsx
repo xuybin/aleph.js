@@ -99,7 +99,7 @@ export default function Header() {
             </svg>
           </a>
           <a
-            href="https://github.com/alephjs/aleph.js"
+            href="https://github.com/xuybin/alephjs"
             style={{
               fontSize: 20,
               color: "#454545",

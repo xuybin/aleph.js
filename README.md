@@ -18,7 +18,7 @@ Some demo apps deployed to [Deno Deploy](https://deno.com/deploy) with the new a
 - Yew SSR: https://aleph-yew.deno.dev/
 - Github OAuth Middleware: https://aleph-github-oauth.deno.dev/
 
-> **Source code**: https://github.com/alephjs/aleph.js/tree/main/examples
+> **Source code**: https://github.com/xuybin/alephjs/tree/main/examples
 
 ## Get started
 

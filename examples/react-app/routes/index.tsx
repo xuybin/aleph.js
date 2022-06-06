@@ -24,7 +24,7 @@ export default function Index() {
         <a href="https://alephjs.org/docs" target="_blank">
           Docs
         </a>
-        <a href="https://github.com/alephjs/aleph.js" target="_blank">
+        <a href="https://github.com/xuybin/alephjs" target="_blank">
           Github
         </a>
       </div>

@@ -34,7 +34,7 @@ const errorTemplate = (message: string, sourceCode: string, stack: string) => `
     </strong>
     <a href="https://alephjs.org/docs/error-handling" target="_blank">Documentations</a>
     |
-    <a href="https://github.com/alephjs/aleph.js/issues/new" target="_blank">Open Issue</a>
+    <a href="https://github.com/xuybin/alephjs/issues/new" target="_blank">Open Issue</a>
     |
     <a href="https://discord.com/channels/775256646821085215/775259756041601044" target="_blank">Discord Help Channel</a>
   </div>
