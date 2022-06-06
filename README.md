@@ -16,6 +16,7 @@ Some demo apps deployed to [Deno Deploy](https://deno.com/deploy) with the new a
 - UnoCSS(tailwind): https://aleph-unocss.deno.dev/
 - Monaco Editor: https://aleph-monaco-editor.deno.dev/
 - Yew SSR: https://aleph-yew.deno.dev/
+- Github OAuth Middleware: https://aleph-github-oauth.deno.dev/
 
 > **Source code**: https://github.com/alephjs/aleph.js/tree/main/examples
 
@@ -24,7 +25,7 @@ Some demo apps deployed to [Deno Deploy](https://deno.com/deploy) with the new a
 Initialize a new project, you can pick a start template with `--template` flag, available templates: `[react, vue]`
 
 ```bash
-deno run -A -r https://deno.land/x/alephjs/cli.ts init --template vue
+deno run -A -r https://deno.land/x/alephjs/cli.ts init  --template vue
 ```
 
 after `init`, you can run the app with deno tasks:
