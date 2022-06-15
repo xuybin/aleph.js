@@ -1,9 +1,9 @@
-import { Untar } from "https://deno.land/std@0.141.0/archive/tar.ts";
-import { Buffer } from "https://deno.land/std@0.141.0/io/buffer.ts";
-import { copy, readAll } from "https://deno.land/std@0.141.0/streams/conversion.ts";
-import { blue, cyan, dim, green, red } from "https://deno.land/std@0.141.0/fmt/colors.ts";
-import { ensureDir } from "https://deno.land/std@0.141.0/fs/ensure_dir.ts";
-import { basename, dirname, join } from "https://deno.land/std@0.141.0/path/mod.ts";
+import { Untar } from "https://deno.land/std@0.142.0/archive/tar.ts";
+import { Buffer } from "https://deno.land/std@0.142.0/io/buffer.ts";
+import { copy, readAll } from "https://deno.land/std@0.142.0/streams/conversion.ts";
+import { blue, cyan, dim, green, red } from "https://deno.land/std@0.142.0/fmt/colors.ts";
+import { ensureDir } from "https://deno.land/std@0.142.0/fs/ensure_dir.ts";
+import { basename, dirname, join } from "https://deno.land/std@0.142.0/path/mod.ts";
 import { gunzip } from "https://deno.land/x/denoflate@1.2.1/mod.ts";
 import { existsDir } from "../lib/fs.ts";
 import log from "../lib/log.ts";
@@ -62,7 +62,7 @@ export default async function (nameArg?: string, template?: string) {
 
   // download template
   console.log("Downloading template, this might take a moment...");
-  const repo = isCanary ? "ije/aleph-canary" : "xuybin/alephjs";
+  const repo = isCanary ? "ije/aleph-canary" : "alephjs/aleph.js";
   const resp = await fetch(`https://codeload.github.com/${repo}/tar.gz/refs/tags/${VERSION}`);
   const gzData = await readAll(new Buffer(await resp.arrayBuffer()));
   const tarData = gunzip(gzData);
@@ -82,7 +82,7 @@ export default async function (nameArg?: string, template?: string) {
     }
   }
 
-  const pkgName = isCanary ? "aleph_canary" : "alephjs";
+  const pkgName = isCanary ? "aleph_canary" : "aleph";
   const alephPkgUri = `https://deno.land/x/${pkgName}@${VERSION}`;
   const importMap = {
     imports: {

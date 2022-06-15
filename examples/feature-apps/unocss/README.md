@@ -4,8 +4,3 @@ Meet the builtin **atomic css** of Aleph.js, powered by [UnoCSS](https://github.
 [Deno Deploy](https://deno.com/deploy):
 
 https://aleph-unocss.deno.dev/
-
-```bash
-deno task dev examples/feature-apps/unocss
-# visit http://localhost:8080/
-```

@@ -46,6 +46,7 @@ export type SSRResult = {
   body: ReadableStream | string;
   deferedData: Record<string, unknown>;
   nonce?: string;
+  is404?: boolean;
 };
 
 export type RenderOptions = {
@@ -53,6 +54,7 @@ export type RenderOptions = {
   routeTable: RouteTable;
   customHTMLRewriter: [selector: string, handlers: HTMLRewriterHandlers][];
   isDev: boolean;
+  noProxy?: boolean;
   ssr?: SSR;
 };
 
@@ -70,12 +72,7 @@ export default {
       const cc = !isFn ? ssr.cacheControl : "public";
       const CSP = isFn ? undefined : ssr.CSP;
       const render = isFn ? ssr : ssr.render;
-      const [url, routeModules, deferedData] = await initSSR(
-        req,
-        ctx,
-        routeTable,
-        dataDefer,
-      );
+      const [url, routeModules, deferedData] = await initSSR(req, ctx, routeTable, dataDefer, options.noProxy);
       const headCollection: string[] = [];
       const ssrContext: SSRContext = {
         url,
@@ -126,9 +123,7 @@ export default {
           }
         }
       }
-      if (
-        routeModules.every(({ dataCacheTtl: ttl }) => typeof ttl === "number" && !Number.isNaN(ttl) && ttl > 0)
-      ) {
+      if (routeModules.every(({ dataCacheTtl: ttl }) => typeof ttl === "number" && !Number.isNaN(ttl) && ttl > 0)) {
         const ttls = routeModules.map(({ dataCacheTtl }) => Number(dataCacheTtl));
         headers.append("Cache-Control", `${cc}, max-age=${Math.min(...ttls)}`);
       } else {
@@ -138,6 +133,8 @@ export default {
         context: ssrContext,
         body,
         deferedData,
+        is404: routeModules.length === 0 || routeModules.at(-1)?.url.pathname ===
+            "/_404",
       };
       if (CSP) {
         const nonce = CSP.nonce ? Date.now().toString(36) : undefined;
@@ -310,12 +307,6 @@ export default {
               },
             });
           }
-        } else {
-          rewriter.on("body", {
-            element(el: Element) {
-              el.replace(`<body><p>Not Found</p></body>`, { html: true });
-            },
-          });
         }
 
         try {
@@ -331,7 +322,7 @@ export default {
     });
 
     headers.set("Content-Type", "text/html; charset=utf-8");
-    return new Response(stream, { headers });
+    return new Response(stream, { headers, status: ssrRes?.is404 ? 404 : 200 });
   },
 };
 
@@ -341,6 +332,7 @@ async function initSSR(
   ctx: Record<string, unknown>,
   routeTable: RouteTable,
   dataDefer: boolean,
+  noProxy?: boolean,
 ): Promise<[
   url: URL,
   routeModules: RouteModule[],
@@ -352,7 +344,7 @@ async function initSSR(
 
   // import module and fetch data for each matched route
   const modules = await Promise.all(matches.map(async ([ret, { filename }]) => {
-    const mod = await importRouteModule(filename);
+    const mod = await importRouteModule(filename, noProxy);
     const dataConfig = util.isPlainObject(mod.data) ? mod.data : mod;
     const rmod: RouteModule = {
       url: new URL(ret.pathname.input + url.search, url.href),

@@ -1,25 +1,27 @@
-import type { ConnInfo, ServeInit } from "https://deno.land/std@0.141.0/http/server.ts";
-import { serve as stdServe, serveTls } from "https://deno.land/std@0.141.0/http/server.ts";
-import { readableStreamFromReader } from "https://deno.land/std@0.141.0/streams/conversion.ts";
+import type { ConnInfo, ServeInit } from "https://deno.land/std@0.142.0/http/server.ts";
+import { serve as stdServe, serveTls } from "https://deno.land/std@0.142.0/http/server.ts";
+import { readableStreamFromReader } from "https://deno.land/std@0.142.0/streams/conversion.ts";
 import type { RouteTable } from "../framework/core/route.ts";
 import log, { LevelName } from "../lib/log.ts";
 import { getContentType } from "../lib/mime.ts";
 import util from "../lib/util.ts";
-import { createContext, type SessionOptions } from "./context.ts";
+import { createContext } from "./context.ts";
+import type { SessionOptions } from "./session.ts";
 import { type ErrorCallback, generateErrorHtml } from "./error.ts";
 import { DependencyGraph } from "./graph.ts";
 import {
+  fixResponse,
   getDeploymentId,
   globalIt,
   initModuleLoaders,
   loadImportMap,
   loadJSXConfig,
   regFullVersion,
+  setCookieHeader,
 } from "./helpers.ts";
 import { loadAndFixIndexHtml } from "./html.ts";
 import renderer, { type SSR } from "./renderer.ts";
-import { content, fixResponse, json, setCookieHeader } from "./response.ts";
-import { fetchData, initRoutes, revive } from "./routing.ts";
+import { fetchRouteData, initRoutes, revive } from "./routing.ts";
 import clientModuleTransformer from "./transformer.ts";
 import type { AlephConfig, FetchHandler, Middleware } from "./types.ts";
 
@@ -79,12 +81,15 @@ export const serve = (options: ServerOptions = {}) => {
                 setTimeout(res, 0);
               }
             } catch (err) {
-              log.error(`Middleare${mw.name ? `(${mw.name})` : ""}:`, err);
-              return onError?.(err, { by: "middleware", url: req.url, context: ctx }) ??
-                new Response(generateErrorHtml(err.stack ?? err.message), {
-                  status: 500,
-                  headers: [["Content-Type", "text/html"]],
-                });
+              const res = onError?.(err, { by: "middleware", url: req.url, context: ctx });
+              if (res instanceof Response) {
+                return res;
+              }
+              log.error(`[middleare${mw.name ? `(${mw.name})` : ""}]`, err);
+              return new Response(generateErrorHtml(err.stack ?? err.message), {
+                status: 500,
+                headers: [["Content-Type", "text/html"]],
+              });
             }
           } else {
             postMiddlewares.push(mw);
@@ -204,12 +209,15 @@ export const serve = (options: ServerOptions = {}) => {
           setTimeout(res, 0);
         }
       } catch (err) {
-        log.error(`Middleare${mw.name ? `(${mw.name})` : ""}:`, err);
-        return onError?.(err, { by: "middleware", url: req.url, context: ctx }) ??
-          new Response(generateErrorHtml(err.stack ?? err.message), {
-            status: 500,
-            headers: [["Content-Type", "text/html"]],
-          });
+        const res = onError?.(err, { by: "middleware", url: req.url, context: ctx });
+        if (res instanceof Response) {
+          return res;
+        }
+        log.error(`[middleare${mw.name ? `(${mw.name})` : ""}]`, err);
+        return new Response(generateErrorHtml(err.stack ?? err.message), {
+          status: 500,
+          headers: [["Content-Type", "text/html"]],
+        });
       }
     }
 
@@ -224,16 +232,16 @@ export const serve = (options: ServerOptions = {}) => {
       () => routes ? initRoutes(routes) : Promise.resolve({ routes: [] }),
     );
     if (routeTable.routes.length > 0) {
-      const accept = req.headers.get("Accept");
-      const fromFetch = accept === "application/json" || !accept?.includes("html");
+      const reqData = req.method === "GET" &&
+        (url.searchParams.has("_data_") || req.headers.get("Accept") === "application/json");
       try {
-        const resp = await fetchData(routeTable.routes, url, req, ctx, fromFetch);
+        const resp = await fetchRouteData(routeTable.routes, url, req, ctx, reqData);
         if (resp) {
           return resp;
         }
       } catch (err) {
         // javascript syntax error
-        if (err instanceof TypeError && !fromFetch) {
+        if (err instanceof TypeError && !reqData) {
           return new Response(generateErrorHtml(err.stack ?? err.message), {
             status: 500,
             headers: [["Content-Type", "text/html"]],
@@ -241,14 +249,14 @@ export const serve = (options: ServerOptions = {}) => {
         }
 
         // use the `onError` if available
-        const res = onError?.(err, { by: "route-api", url: req.url, context: ctx });
+        const res = onError?.(err, { by: "route-data-fetch", url: req.url, context: ctx });
         if (res instanceof Response) {
-          return fixResponse(res, ctx.headers, fromFetch);
+          return fixResponse(res, ctx.headers, reqData);
         }
 
         // user throw a response
         if (err instanceof Response) {
-          return fixResponse(err, ctx.headers, fromFetch);
+          return fixResponse(err, ctx.headers, reqData);
         }
 
         // prints the error stack
@@ -258,7 +266,7 @@ export const serve = (options: ServerOptions = {}) => {
 
         // return the error as a json
         const status: number = util.isUint(err.status ?? err.code) ? err.status ?? err.code : 500;
-        return json({ ...err, status, message: err.message ?? String(err), stack: err.stack }, {
+        return Response.json({ ...err, status, message: err.message ?? String(err), stack: err.stack }, {
           status,
           headers: ctx.headers,
         });
@@ -328,4 +336,4 @@ export const serve = (options: ServerOptions = {}) => {
   }
 };
 
-export { content, json, revive, setCookieHeader };
+export { revive, setCookieHeader };

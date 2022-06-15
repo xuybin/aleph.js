@@ -1,4 +1,4 @@
-import { basename, extname, relative, resolve } from "https://deno.land/std@0.141.0/path/mod.ts";
+import { basename, extname, relative, resolve } from "https://deno.land/std@0.142.0/path/mod.ts";
 import mitt, { Emitter } from "https://esm.sh/mitt@3.0.0";
 import { parseDeps, transformCSS } from "https://deno.land/x/aleph_compiler@0.6.1/mod.ts";
 import { findFile, watchFs } from "../lib/fs.ts";
@@ -134,6 +134,7 @@ if (import.meta.main) {
               },
             });
           }
+          // todo: check loaders
           emitters.forEach((e) => {
             e.emit("transform", {
               specifier,
@@ -141,6 +142,7 @@ if (import.meta.main) {
             });
           });
         } catch (error) {
+          log.error(error);
           emitters.forEach((e) => {
             e.emit("transform", {
               specifier,
@@ -295,7 +297,7 @@ async function bootstrap(signal: AbortSignal, entry: string | undefined, fixedPo
       keyFile,
       signal,
       onListenSuccess: (port) => log.info(`Server ready on http://localhost:${port}`),
-      handler: (req: Request) => {
+      handler: (req, connInfo) => {
         const { pathname } = new URL(req.url);
 
         // handle HMR sockets
@@ -303,7 +305,7 @@ async function bootstrap(signal: AbortSignal, entry: string | undefined, fixedPo
           return handleHMRSocket(req);
         }
 
-        return handler?.(req);
+        return handler?.(req, connInfo);
       },
     });
   } catch (error) {

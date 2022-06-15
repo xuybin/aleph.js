@@ -20,12 +20,17 @@ Some demo apps deployed to [Deno Deploy](https://deno.com/deploy) with the new a
 
 > **Source code**: https://github.com/xuybin/alephjs/tree/main/examples
 
+## Real-world Apps
+
+- Deno Deploy: https://dash.deno.com
+
 ## Get started
 
-Initialize a new project, you can pick a start template with `--template` flag, available templates: `[react, vue]`
+Initialize a new project, you can pick a start template with `--template` flag, available templates:
+`[react, vue, api, yew]`
 
 ```bash
-deno run -A -r https://deno.land/x/alephjs/cli.ts init  --template vue
+deno run -A https://deno.land/x/alephjs@1.0.0-alpha.68.0/cli.ts init --template react
 ```
 
 after `init`, you can run the app with deno tasks:
@@ -43,6 +48,8 @@ deno task start
 # build the app for severless deployment
 deno task build
 ```
+
+## Documentation
 
 > The new docs site is working in progress: https://aleph.deno.dev
 > ([PR](https://github.com/alephjs/alephjs.org/pull/58)). You can join the Aleph.js

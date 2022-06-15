@@ -1,4 +1,4 @@
-import { join } from "https://deno.land/std@0.141.0/path/mod.ts";
+import { join } from "https://deno.land/std@0.142.0/path/mod.ts";
 import cache from "./cache.ts";
 import { getContentType } from "./mime.ts";
 import util from "./util.ts";
@@ -30,8 +30,7 @@ export async function existsFile(path: string): Promise<boolean> {
 }
 
 /* find file in the directory */
-export async function findFile(filenames: string[]): Promise<string | undefined> {
-  const cwd = Deno.cwd();
+export async function findFile(filenames: string[], cwd = Deno.cwd()): Promise<string | undefined> {
   for (const filename of filenames) {
     const fullPath = join(cwd, filename);
     if (await existsFile(fullPath)) {
