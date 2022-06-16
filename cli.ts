@@ -21,7 +21,7 @@ const helpMessage = `${bold("Aleph.js")} v${VERSION}
 The Full-stack Framework in Deno.
 
 Docs: https://alephjs.org/docs
-Bugs: https://github.com/xuybin/alephjs/issues
+Bugs: https://github.com/alephjs/aleph.js/issues
 
 Usage:
     deno run -A https://deno.land/x/alephjs/cli.ts <command> [...options]
