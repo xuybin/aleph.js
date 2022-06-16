@@ -225,7 +225,7 @@ jobs:
     `${dim("▲")} deno task build  ${dim("# build the app into a worker for serverless platforms like Deno Deploy")}`,
     "",
     `Docs: ${cyan("https://alephjs.org/docs")}`,
-    `Bugs: ${cyan("https://alephjs.org.com/xuybin/alephjs/issues")}`,
+    `Bugs: ${cyan("https://alephjs.org.com/alephjs/aleph.js/issues")}`,
     "",
   ].join("\n"));
   Deno.exit(0);
