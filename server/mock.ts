@@ -1,24 +1,24 @@
-import { join, resolve } from "https://deno.land/std@0.142.0/path/mod.ts";
+import util from "../lib/util.ts";
 import { createContext } from "./context.ts";
-import { globalIt, loadImportMap } from "./helpers.ts";
+import { globalIt } from "./helpers.ts";
 import { loadAndFixIndexHtml } from "./html.ts";
 import renderer, { type SSR } from "./renderer.ts";
 import { fetchRouteData, initRoutes } from "./routing.ts";
 import type { Middleware } from "./types.ts";
 
 type MockServerOptions = {
+  appDir?: string;
   routes: string;
   middlewares?: Middleware[];
   ssr?: SSR;
-  cwd?: string;
   origin?: string;
 };
 
 /** The MockServer class to create a minimal server for integration testing.
  *
  * Limits:
- * - importing css is _NOT_ allowed
- * - custom loader is _NOT_ supported, like `import './foo.vue'`
+ * - importing css is _NOT_ allowed: `import "./style.css"`
+ * - custom loader is _NOT_ supported, like `import "./component.vue"`
  *
  * @example
  * ```ts
@@ -73,40 +73,30 @@ export class MockServer {
       }
     }
 
-    const cwd = resolve(this.#options.cwd ?? Deno.cwd());
-    const routeTable = await globalIt(
-      `mockRoutes:${cwd}${JSON.stringify(routes)}`,
-      () => initRoutes(this.#options.cwd ? "./" + join(this.#options.cwd, routes) : routes),
+    const appDir = this.#options.appDir ? "." + util.cleanPath(this.#options.appDir) : undefined;
+    const routeConfig = await globalIt(
+      `mockRoutes:${appDir}${JSON.stringify(routes)}`,
+      () => initRoutes(routes, appDir),
     );
     const reqData = req.method === "GET" &&
       (url.searchParams.has("_data_") || req.headers.get("Accept") === "application/json");
-    const res = await fetchRouteData(
-      routeTable.routes,
-      url,
-      req,
-      ctx,
-      reqData,
-      true,
-    );
+    const res = await fetchRouteData(routeConfig.routes, url, req, ctx, reqData);
     if (res) {
       return res;
     }
 
-    const importMap = await globalIt(`mockImportMap:${cwd}`, () => loadImportMap(cwd));
-    const indexHtml = await globalIt(`mockIndexHtml:${cwd}`, () =>
+    const indexHtml = await globalIt(`mockIndexHtml:${appDir}`, () =>
       loadAndFixIndexHtml({
-        importMap,
         ssr: typeof ssr === "function" ? {} : ssr,
         isDev: false,
-        cwd,
+        appDir,
       }));
 
     return renderer.fetch(req, ctx, {
       indexHtml,
-      routeTable,
+      routeConfig,
       customHTMLRewriter,
       isDev: false,
-      noProxy: true,
       ssr,
     });
   }

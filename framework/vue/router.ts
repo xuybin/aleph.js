@@ -1,9 +1,9 @@
 import type { App, Component, Ref, ShallowRef } from "vue";
 import { createSSRApp as vueCreateSSRApp, defineComponent, h, ref, shallowRef, watch } from "vue";
-import type { Route, RouteMeta, RouteModule, RouteTable } from "../core/route.ts";
+import type { Route, RouteConfig, RouteMeta, RouteModule } from "../core/route.ts";
 import { matchRoutes } from "../core/route.ts";
 import events from "../core/events.ts";
-import FetchError from "../core/fetch_error.ts";
+import { FetchError } from "../core/error.ts";
 import { URLPatternCompat } from "../core/url_pattern.ts";
 import type { SSRContext } from "../../server/renderer.ts";
 import { RouterContext } from "./context.ts";
@@ -360,7 +360,7 @@ function getLoadingBar(): HTMLDivElement {
   return bar;
 }
 
-function loadRoutesFromTag(): RouteTable {
+function loadRoutesFromTag(): RouteConfig {
   const el = window.document?.getElementById("routes-manifest");
   if (el) {
     try {
@@ -378,13 +378,13 @@ function loadRoutesFromTag(): RouteTable {
           }
           return route;
         });
-        return { routes, _app, _404 };
+        return { routes, prefix: manifest.prefix, _app, _404 };
       }
     } catch (e) {
       throw new Error(`loadRoutesFromTag: ${e.message}`);
     }
   }
-  return { routes: [] };
+  return { routes: [], prefix: "" };
 }
 
 const useRouter = () => {

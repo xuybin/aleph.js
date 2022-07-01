@@ -23,8 +23,9 @@ export type Route = readonly [
   meta: RouteMeta,
 ];
 
-export type RouteTable = {
+export type RouteConfig = {
   routes: Route[];
+  prefix: string;
   _404?: Route;
   _app?: Route;
 };
@@ -32,8 +33,8 @@ export type RouteTable = {
 export type RouteMatch = [ret: URLPatternResult, route: RouteMeta];
 
 /** match routes against the given url */
-export function matchRoutes(url: URL, record: RouteTable): RouteMatch[] {
-  const { routes, _app, _404 } = record;
+export function matchRoutes(url: URL, config: RouteConfig): RouteMatch[] {
+  const { routes, _app, _404 } = config;
   let { pathname } = url;
   if (pathname !== "/") {
     pathname = util.trimSuffix(pathname, "/");

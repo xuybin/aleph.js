@@ -1,8 +1,7 @@
-import { basename, resolve } from "https://deno.land/std@0.142.0/path/mod.ts";
-import { findFile } from "../lib/fs.ts";
+import { basename, resolve } from "https://deno.land/std@0.145.0/path/mod.ts";
 import log, { blue, bold } from "../lib/log.ts";
 import { build } from "../server/build.ts";
-import { builtinModuleExts, initModuleLoaders, loadImportMap } from "../server/helpers.ts";
+import { builtinModuleExts, findFile, initModuleLoaders, loadImportMap } from "../server/helpers.ts";
 import { serve } from "../server/mod.ts";
 import { proxyModules } from "../server/proxy_modules.ts";
 
@@ -28,7 +27,9 @@ if (import.meta.main) {
   if (buildScript) {
     log.info(`Running ${blue(basename(buildScript))}...`);
     const { default: build } = await import(`file://${resolve(buildScript)}`);
-    await build();
+    if (typeof build === "function") {
+      await build();
+    }
   }
 
   if (serverEntry) {

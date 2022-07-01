@@ -1,28 +1,29 @@
-import type { ConnInfo, ServeInit } from "https://deno.land/std@0.142.0/http/server.ts";
-import { serve as stdServe, serveTls } from "https://deno.land/std@0.142.0/http/server.ts";
-import { readableStreamFromReader } from "https://deno.land/std@0.142.0/streams/conversion.ts";
-import type { RouteTable } from "../framework/core/route.ts";
+import type { ConnInfo, ServeInit } from "https://deno.land/std@0.145.0/http/server.ts";
+import { serve as stdServe, serveTls } from "https://deno.land/std@0.145.0/http/server.ts";
+import { readableStreamFromReader } from "https://deno.land/std@0.145.0/streams/conversion.ts";
+import { generateErrorHtml, TransformError } from "../framework/core/error.ts";
+import type { RouteConfig } from "../framework/core/route.ts";
 import log, { LevelName } from "../lib/log.ts";
-import { getContentType } from "../lib/mime.ts";
+import { getContentType } from "../lib/media_type.ts";
 import util from "../lib/util.ts";
 import { createContext } from "./context.ts";
-import type { SessionOptions } from "./session.ts";
-import { type ErrorCallback, generateErrorHtml } from "./error.ts";
 import { DependencyGraph } from "./graph.ts";
 import {
   fixResponse,
+  getAlephPkgUri,
   getDeploymentId,
   globalIt,
   initModuleLoaders,
   loadImportMap,
   loadJSXConfig,
   regFullVersion,
-  setCookieHeader,
+  toLocalPath,
 } from "./helpers.ts";
 import { loadAndFixIndexHtml } from "./html.ts";
 import renderer, { type SSR } from "./renderer.ts";
-import { fetchRouteData, initRoutes, revive } from "./routing.ts";
+import { fetchRouteData, initRoutes } from "./routing.ts";
 import clientModuleTransformer from "./transformer.ts";
+import type { SessionOptions } from "./session.ts";
 import type { AlephConfig, FetchHandler, Middleware } from "./types.ts";
 
 export type ServerOptions = Omit<ServeInit, "onError"> & {
@@ -33,11 +34,25 @@ export type ServerOptions = Omit<ServeInit, "onError"> & {
   middlewares?: Middleware[];
   fetch?: FetchHandler;
   ssr?: SSR;
-  onError?: ErrorCallback;
+  onError?: ErrorHandler;
 } & AlephConfig;
 
+export type ErrorHandler = {
+  (
+    error: unknown,
+    cause: {
+      by: "route-data-fetch" | "ssr" | "transform" | "fs" | "middleware";
+      url: string;
+      context?: Record<string, unknown>;
+    },
+  ): Response | void;
+};
+
+/** Start the Aleph.js server. */
 export const serve = (options: ServerOptions = {}) => {
-  const { routes, unocss, build, devServer, middlewares, fetch, ssr, logLevel, onError } = options;
+  const { routes, build, devServer, middlewares, fetch, ssr, logLevel, onError } = options;
+  const maybeAppDir = options.appDir ?? Deno.env.get("APP_DIR");
+  const appDir = maybeAppDir ? "." + util.cleanPath(maybeAppDir) : undefined;
   const isDev = Deno.env.get("ALEPH_ENV") === "development";
 
   // server handler
@@ -45,17 +60,21 @@ export const serve = (options: ServerOptions = {}) => {
     const url = new URL(req.url);
     const { pathname, searchParams } = url;
 
-    // close the hot-reloading websocket connection and tell the client to reload
-    // this request occurs when the client try to connect to the hot-reloading websocket in production mode
     if (pathname === "/-/hmr") {
-      const { socket, response } = Deno.upgradeWebSocket(req, {});
-      socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({ type: "reload" }));
-        setTimeout(() => {
-          socket.close();
-        }, 50);
-      });
-      return response;
+      if (isDev) {
+        const { handleHMRSocket } = await globalIt("__ALEPH_SERVER_DEV", () => import("./dev.ts"));
+        return handleHMRSocket(req);
+      } else {
+        // close the hot-reloading websocket and tell the client to reload the page
+        const { socket, response } = Deno.upgradeWebSocket(req, {});
+        socket.addEventListener("open", () => {
+          socket.send(JSON.stringify({ type: "reload" }));
+          setTimeout(() => {
+            socket.close();
+          }, 50);
+        });
+        return response;
+      }
     }
 
     const postMiddlewares: Middleware[] = [];
@@ -99,9 +118,9 @@ export const serve = (options: ServerOptions = {}) => {
     }
 
     // transform client modules
-    if (clientModuleTransformer.test(pathname)) {
+    if (!searchParams.has("raw") && clientModuleTransformer.test(pathname)) {
       try {
-        const importMap = await globalIt("__ALEPH_IMPORT_MAP", loadImportMap);
+        const importMap = await globalIt("__ALEPH_IMPORT_MAP", () => loadImportMap());
         const jsxConfig = await globalIt("__ALEPH_JSX_CONFIG", () => loadJSXConfig(importMap));
         return await clientModuleTransformer.fetch(req, {
           importMap,
@@ -110,9 +129,24 @@ export const serve = (options: ServerOptions = {}) => {
           isDev,
         });
       } catch (err) {
+        if (err instanceof TransformError) {
+          log.error(err.message);
+          const alephPkgUri = toLocalPath(getAlephPkgUri());
+          return new Response(
+            `import { showTransformError } from "${alephPkgUri}/framework/core/error.ts";showTransformError(${
+              JSON.stringify(err)
+            });`,
+            {
+              headers: [
+                ["Content-Type", "application/javascript"],
+                ["X-Transform-Error", "true"],
+              ],
+            },
+          );
+        }
         if (!(err instanceof Deno.errors.NotFound)) {
           log.error(err);
-          return onError?.(err, { by: "transplie", url: req.url }) ??
+          return onError?.(err, { by: "transform", url: req.url }) ??
             new Response(generateErrorHtml(err.stack ?? err.message), {
               status: 500,
               headers: [["Content-Type", "text/html"]],
@@ -122,24 +156,38 @@ export const serve = (options: ServerOptions = {}) => {
     }
 
     // use loader to load modules
-    const moduleLoaders = await globalIt("__ALEPH_MODULE_LOADERS", initModuleLoaders);
-    const loader = moduleLoaders.find((loader) => loader.test(pathname));
+    const moduleLoaders = await globalIt("__ALEPH_MODULE_LOADERS", () => initModuleLoaders());
+    const loader = searchParams.has("raw") ? null : moduleLoaders.find((loader) => loader.test(pathname));
     if (loader) {
       try {
-        const importMap = await globalIt("__ALEPH_IMPORT_MAP", loadImportMap);
+        const importMap = await globalIt("__ALEPH_IMPORT_MAP", () => loadImportMap());
         const jsxConfig = await globalIt("__ALEPH_JSX_CONFIG", () => loadJSXConfig(importMap));
-        const loaded = await loader.load(pathname, { isDev, importMap });
         return await clientModuleTransformer.fetch(req, {
-          loaded,
+          loader,
           importMap,
           jsxConfig,
           buildTarget: build?.target,
           isDev,
         });
       } catch (err) {
+        if (err instanceof TransformError) {
+          log.error(err.message);
+          const alephPkgUri = toLocalPath(getAlephPkgUri());
+          return new Response(
+            `import { showTransformError } from "${alephPkgUri}/framework/core/error.ts";showTransformError(${
+              JSON.stringify(err)
+            });`,
+            {
+              headers: [
+                ["Content-Type", "application/javascript"],
+                ["X-Transform-Error", "true"],
+              ],
+            },
+          );
+        }
         if (!(err instanceof Deno.errors.NotFound)) {
           log.error(err);
-          return onError?.(err, { by: "transplie", url: req.url }) ??
+          return onError?.(err, { by: "transform", url: req.url }) ??
             new Response(generateErrorHtml(err.stack ?? err.message), {
               status: 500,
               headers: [["Content-Type", "text/html"]],
@@ -227,15 +275,15 @@ export const serve = (options: ServerOptions = {}) => {
     }
 
     // request route api
-    const routeTable: RouteTable = await globalIt(
-      "__ALEPH_ROUTES",
-      () => routes ? initRoutes(routes) : Promise.resolve({ routes: [] }),
+    const routeConfig: RouteConfig | null = await globalIt(
+      "__ALEPH_ROUTE_CONFIG",
+      () => routes ? initRoutes(routes, appDir) : Promise.resolve(null),
     );
-    if (routeTable.routes.length > 0) {
+    if (routeConfig && routeConfig.routes.length > 0) {
       const reqData = req.method === "GET" &&
-        (url.searchParams.has("_data_") || req.headers.get("Accept") === "application/json");
+        (searchParams.has("_data_") || req.headers.get("Accept") === "application/json");
       try {
-        const resp = await fetchRouteData(routeTable.routes, url, req, ctx, reqData);
+        const resp = await fetchRouteData(routeConfig.routes, url, req, ctx, reqData);
         if (resp) {
           return resp;
         }
@@ -281,17 +329,16 @@ export const serve = (options: ServerOptions = {}) => {
     }
 
     try {
-      const importMap = await globalIt("__ALEPH_IMPORT_MAP", loadImportMap);
       const indexHtml = await globalIt("__ALEPH_INDEX_HTML", () =>
         loadAndFixIndexHtml({
+          appDir,
           isDev,
-          importMap,
           ssr: typeof ssr === "function" ? {} : ssr,
           hmrWebSocketUrl: options.devServer?.hmrWebSocketUrl,
         }));
       return renderer.fetch(req, ctx, {
         indexHtml,
-        routeTable,
+        routeConfig,
         customHTMLRewriter,
         isDev,
         ssr,
@@ -320,8 +367,16 @@ export const serve = (options: ServerOptions = {}) => {
   }
 
   // inject global objects
-  Reflect.set(globalThis, "__ALEPH_CONFIG", { routes, unocss, build, devServer });
+  const { routeModules, unocss } = options;
+  Reflect.set(globalThis, "__ALEPH_CONFIG", { appDir, routes, routeModules, unocss, build, devServer });
   Reflect.set(globalThis, "__ALEPH_CLIENT_DEP_GRAPH", new DependencyGraph());
+
+  // apply `watchFS` handler of `devServer`
+  if (isDev) {
+    globalIt("__ALEPH_SERVER_DEV", () => import("./dev.ts")).then(({ watchFS }) => {
+      watchFS(appDir);
+    });
+  }
 
   const { hostname, port = 8080, certFile, keyFile, signal } = options;
   if (Deno.env.get("ALEPH_CLI")) {
@@ -335,5 +390,3 @@ export const serve = (options: ServerOptions = {}) => {
     log.info(`Server ready on http://localhost:${port}`);
   }
 };
-
-export { revive, setCookieHeader };

@@ -1,9 +1,8 @@
-import { parse } from "https://deno.land/std@0.142.0/flags/mod.ts";
-import { readLines } from "https://deno.land/std@0.142.0/io/mod.ts";
-import { writeAll } from "https://deno.land/std@0.142.0/streams/conversion.ts";
-import { basename, resolve } from "https://deno.land/std@0.142.0/path/mod.ts";
-import { parseImportMap } from "./server/helpers.ts";
-import { findFile } from "./lib/fs.ts";
+import { parse } from "https://deno.land/std@0.145.0/flags/mod.ts";
+import { readLines } from "https://deno.land/std@0.145.0/io/mod.ts";
+import { writeAll } from "https://deno.land/std@0.145.0/streams/conversion.ts";
+import { basename, resolve } from "https://deno.land/std@0.145.0/path/mod.ts";
+import { findFile, parseImportMap } from "./server/helpers.ts";
 import log, { bold, dim, stripColor } from "./lib/log.ts";
 import { serveDir } from "./lib/serve.ts";
 import util from "./lib/util.ts";
@@ -172,7 +171,7 @@ type RunOptions = {
 
 async function run(command: string, options: RunOptions) {
   const { version, isCanary, denoConfigFile, importMapFile, reload } = options;
-  const { esbuildBinDir, esbuildBinPath } = getEsbuildPath("0.14.42");
+  const { esbuildBinDir, esbuildBinPath } = getEsbuildPath("0.14.47");
   const devPort = Deno.env.get("ALEPH_DEV_PORT");
   const rwDirs = [
     Deno.env.get("MODULES_CACHE_DIR"),
@@ -197,7 +196,7 @@ async function run(command: string, options: RunOptions) {
     importMapFile && `--import-map=${importMapFile}`,
   ].filter(Boolean) as string[];
   if (version) {
-    const pkgName = isCanary ? "aleph_canary" : "aleph";
+    const pkgName = isCanary ? "aleph_canary" : "alephjs";
     cmd.push(`https://deno.land/x/${pkgName}@${version}/commands/${command}.ts`);
     Deno.env.set("ALEPH_VERSION", version);
   } else if (devPort) {
@@ -233,6 +232,9 @@ const regStackLoc = /(http:\/\/localhost:60\d{2}\/.+)(:\d+:\d+)/;
 function fixLine(line: string): string | null {
   const l = stripColor(line);
   if (l.startsWith(`Download http://localhost:`)) {
+    return null;
+  }
+  if (l.startsWith(`Warning the configuration file `)) {
     return null;
   }
   const ret = l.match(regStackLoc);

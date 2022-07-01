@@ -1,7 +1,7 @@
-import type { ConnInfo } from "https://deno.land/std@0.142.0/http/server.ts";
+import type { ConnInfo } from "https://deno.land/std@0.145.0/http/server.ts";
 import util from "../lib/util.ts";
-import type { HTMLRewriterHandlers } from "./html.ts";
 import { type CookieOptions, setCookieHeader } from "./helpers.ts";
+import type { HTMLRewriterHandlers } from "./html.ts";
 import { SessionImpl, type SessionOptions } from "./session.ts";
 
 type ContextOptions = {
@@ -10,8 +10,8 @@ type ContextOptions = {
   session?: SessionOptions;
 };
 
+/** create a context object */
 export function createContext(req: Request, options?: ContextOptions): typeof ctx {
-  // create the context object
   const ctx = {
     connInfo: options?.connInfo,
     params: {},

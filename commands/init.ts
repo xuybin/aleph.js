@@ -1,162 +1,40 @@
-import { Untar } from "https://deno.land/std@0.142.0/archive/tar.ts";
-import { Buffer } from "https://deno.land/std@0.142.0/io/buffer.ts";
-import { copy, readAll } from "https://deno.land/std@0.142.0/streams/conversion.ts";
-import { blue, cyan, dim, green, red } from "https://deno.land/std@0.142.0/fmt/colors.ts";
-import { ensureDir } from "https://deno.land/std@0.142.0/fs/ensure_dir.ts";
-import { basename, dirname, join } from "https://deno.land/std@0.142.0/path/mod.ts";
+import { Untar } from "https://deno.land/std@0.145.0/archive/tar.ts";
+import { Buffer } from "https://deno.land/std@0.145.0/io/buffer.ts";
+import { copy, readAll } from "https://deno.land/std@0.145.0/streams/conversion.ts";
+import { blue, cyan, dim, green, red } from "https://deno.land/std@0.145.0/fmt/colors.ts";
+import { ensureDir } from "https://deno.land/std@0.145.0/fs/ensure_dir.ts";
+import { basename, dirname, join } from "https://deno.land/std@0.145.0/path/mod.ts";
 import { gunzip } from "https://deno.land/x/denoflate@1.2.1/mod.ts";
-import { existsDir } from "../lib/fs.ts";
 import log from "../lib/log.ts";
 import util from "../lib/util.ts";
-import { isCanary, VERSION } from "../version.ts";
+import { generateRoutesModule } from "../server/dev.ts";
+import { existsDir } from "../server/helpers.ts";
+import { initRoutes } from "../server/routing.ts";
+import { isCanary } from "../version.ts";
 
-const templates = [
-  "api",
-  "react",
-  "vue",
-  "yew",
+type TemplateMeta = {
+  entry: string;
+  cli?: boolean;
+  unocss?: boolean;
+};
+
+const templates: Record<string, TemplateMeta> = {
+  "api": { entry: "server.ts" },
+  "react": { entry: "server.tsx", unocss: true },
+  "vue": { entry: "server.ts", cli: true, unocss: true },
+  "yew": { entry: "server.ts", cli: true },
   // todo:
   // "preact",
   // "svelte",
   // "lit",
   // "vanilla",
-];
-const versions = {
-  react: "18.1.0",
-  vue: "3.2.33",
 };
 
-export const helpMessage = `
-Usage:
-    deno run -A https://deno.land/x/alephjs/cli.ts init <name> [...options]
-
-<name> represents the name of new app.
-
-Options:
-    -t, --template [${templates.join(",")}] Specify a template for the created project
-    -h, --help      ${" ".repeat(templates.join(",").length)}  Prints help message
-`;
-
-export default async function (nameArg?: string, template?: string) {
-  if (!template) {
-    // todo: template choose dialog
-    template = "react";
-  }
-  if (!templates.includes(template)) {
-    log.fatal(`Invalid template name ${red(template)}, must be one of [${blue(templates.join(","))}]`);
-  }
-
-  const name = nameArg || (prompt("Project Name:") || "").trim();
-  if (name === "") {
-    return;
-  }
-
-  if (!/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(name)) {
-    log.fatal(`Invalid project name: ${red(name)}`);
-  }
-
-  // check dir is clean
-  if (!(await isFolderEmpty(Deno.cwd(), name)) && !confirm("Continue?")) {
-    Deno.exit(1);
-  }
-
-  // download template
-  console.log("Downloading template, this might take a moment...");
-  const repo = isCanary ? "ije/aleph-canary" : "xuybin/alephjs";
-  const resp = await fetch(`https://codeload.github.com/${repo}/tar.gz/refs/tags/${VERSION}`);
-  const gzData = await readAll(new Buffer(await resp.arrayBuffer()));
-  const tarData = gunzip(gzData);
-  const entryList = new Untar(new Buffer(tarData));
-  const workingDir = join(Deno.cwd(), name);
-
-  for await (const entry of entryList) {
-    const prefix = `${basename(repo)}-${VERSION}/examples/${template}-app/`;
-    if (entry.fileName.startsWith(prefix)) {
-      const fp = join(workingDir, util.trimPrefix(entry.fileName, prefix));
-      if (entry.type === "directory") {
-        await ensureDir(fp);
-        continue;
-      }
-      const file = await Deno.open(fp, { write: true, create: true });
-      await copy(entry, file);
-    }
-  }
-
-  const pkgName = isCanary ? "aleph_canary" : "alephjs";
-  const alephPkgUri = `https://deno.land/x/${pkgName}@${VERSION}`;
-  const importMap = {
-    imports: {
-      "~/": "./",
-      "@unocss/": `${alephPkgUri}/lib/@unocss/`,
-      "aleph/": `${alephPkgUri}/`,
-      "aleph/server": `${alephPkgUri}/server/mod.ts`,
-    },
-    scopes: {},
-  };
-  const denoConfig = {
-    "compilerOptions": {
-      "lib": [
-        "dom",
-        "dom.iterable",
-        "dom.asynciterable",
-        "dom.extras",
-        "deno.ns",
-      ],
-      "types": [
-        `${alephPkgUri}/types.d.ts`,
-      ],
-    },
-    "importMap": "import_map.json",
-    "tasks": {
-      "dev": `deno run -A ${alephPkgUri}/cli.ts dev`,
-      "start": `deno run -A ${alephPkgUri}/cli.ts start`,
-      "build": `deno run -A ${alephPkgUri}/cli.ts build`,
-    },
-    "fmt": {},
-    "lint": {},
-  };
-  const gitignore = [
-    ".DS_Store",
-    "Thumbs.db",
-    "dist/",
-  ];
-  switch (template) {
-    case "react": {
-      Object.assign(importMap.imports, {
-        "aleph/react": `${alephPkgUri}/framework/react/mod.ts`,
-        "react": `https://esm.sh/react@${versions.react}`,
-        "react-dom": `https://esm.sh/react-dom@${versions.react}`,
-        "react-dom/": `https://esm.sh/react-dom@${versions.react}/`,
-      });
-      Object.assign(denoConfig.compilerOptions, {
-        "jsx": "react-jsx",
-        "jsxImportSource": `https://esm.sh/react@${versions.react}`,
-      });
-      break;
-    }
-    case "vue": {
-      Object.assign(importMap.imports, {
-        "aleph/vue": `${alephPkgUri}/framework/vue/mod.ts`,
-        "vue": `https://esm.sh/vue@${versions.vue}`,
-        "vue/server-renderer": `https://esm.sh/@vue/server-renderer@${versions.vue}`,
-        "*.vue": `${alephPkgUri}/loaders/vue.ts!loader`,
-      });
-      break;
-    }
-  }
-  await ensureDir(workingDir);
-  await Promise.all([
-    Deno.writeTextFile(join(workingDir, ".gitignore"), gitignore.join("\n")),
-    Deno.writeTextFile(join(workingDir, "deno.json"), JSON.stringify(denoConfig, undefined, 2)),
-    Deno.writeTextFile(join(workingDir, "import_map.json"), JSON.stringify(importMap, undefined, 2)),
-  ]);
-
-  if (confirm("Add Github Action script for Deno Deploy™️?")) {
-    const ciFile = join(workingDir, ".github/workflows/deploy.yml");
-    await ensureDir(dirname(ciFile));
-    await Deno.writeTextFile(
-      ciFile,
-      `name: Deploy
+const versions = {
+  react: "18.1.0",
+  vue: "3.2.37",
+};
+const deployCI = `name: Deploy
 on: [push]
 
 jobs:
@@ -182,9 +60,203 @@ jobs:
         with:
           project: PROJECT_NAME # todo: change this to your project name in https://dash.deno.com
           entrypoint: dist/server.js
-`,
+`;
+
+export const helpMessage = `
+Usage:
+    deno run -A https://deno.land/x/alephjs/cli.ts init <name> [...options]
+
+<name> represents the name of new app.
+
+Options:
+    -t, --template [${Object.keys(templates).join(",")}] Specify a template for the created project
+    -h, --help      ${" ".repeat(Object.keys(templates).join(",").length)}  Prints help message
+`;
+
+export default async function init(nameArg?: string, template?: string) {
+  if (!template) {
+    // todo: template choose dialog
+    template = "react";
+  }
+  if (!(template in templates)) {
+    log.fatal(`Invalid template name ${red(template)}, must be one of [${blue(Object.keys(templates).join(","))}]`);
+  }
+
+  // get and check the project name
+  const name = nameArg || (prompt("Project Name:") || "").trim();
+  if (name === "") {
+    await init(nameArg, template);
+    return;
+  }
+  if (!/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(name)) {
+    log.fatal(`Invalid project name: ${red(name)}`);
+  }
+
+  // check the dir is clean
+  if (!(await isFolderEmpty(Deno.cwd(), name)) && !confirm("Continue?")) {
+    Deno.exit(1);
+  }
+
+  // download template
+  console.log("Downloading template, this might take a moment...");
+  const pkgName = isCanary ? "aleph_canary" : "alephjs";
+  const res = await fetch(`https://cdn.deno.land/${pkgName}/meta/versions.json`);
+  if (res.status !== 200) {
+    console.error(await res.text());
+    Deno.exit(1);
+  }
+  const { latest: VERSION } = await res.json();
+  const repo = isCanary ? "ije/aleph-canary" : "xuybin/alephjs";
+  const resp = await fetch(`https://codeload.github.com/${repo}/tar.gz/refs/tags/${VERSION}`);
+  if (resp.status !== 200) {
+    console.error(await resp.text());
+    Deno.exit(1);
+  }
+  const gzData = await readAll(new Buffer(await resp.arrayBuffer()));
+  const tarData = gunzip(gzData);
+  const entryList = new Untar(new Buffer(tarData));
+  const workingDir = join(Deno.cwd(), name);
+
+  // write template files
+  for await (const entry of entryList) {
+    const prefix = `${basename(repo)}-${VERSION}/examples/${template}-app/`;
+    if (entry.fileName.startsWith(prefix)) {
+      const name = util.trimPrefix(entry.fileName, prefix);
+      if (name !== "README.md") {
+        const fp = join(workingDir, name);
+        if (entry.type === "directory") {
+          await ensureDir(fp);
+          continue;
+        }
+        const file = await Deno.open(fp, { write: true, create: true });
+        await copy(entry, file);
+      }
+    }
+  }
+
+  const { entry, cli: cliMode, unocss } = templates[template];
+
+  // generate `routes.gen.ts` module
+  if (!cliMode) {
+    const entryCode = await Deno.readTextFile(join(workingDir, entry));
+    const m = entryCode.match(/(\s+)routes: "(.+)"/);
+    if (m) {
+      const routeConfig = await initRoutes(m[2], undefined, workingDir);
+      await Deno.writeTextFile(
+        join(workingDir, entry),
+        entryCode
+          .replace(/(\s+)routes: "(.+)/, `$1routes: "$2$1routeModules,`)
+          .replace(
+            /(\s*)serve\({/,
+            `$1// pre-import route modules for serverless env that doesn't support the dynamic imports.\nimport routeModules from "${routeConfig.prefix}/_export.ts";\n\nserve({`,
+          ),
+      );
+      await generateRoutesModule(routeConfig, workingDir);
+    }
+  }
+
+  const alephPkgUri = `https://deno.land/x/${pkgName}@${VERSION}`;
+  const importMap = {
+    imports: {
+      "~/": "./",
+      "std/": "https://deno.land/std@0.145.0/",
+      "aleph/": `${alephPkgUri}/`,
+      "aleph/server": `${alephPkgUri}/server/mod.ts`,
+    },
+    scopes: {},
+  };
+  const denoConfig = {
+    "compilerOptions": {
+      "lib": [
+        "dom",
+        "dom.iterable",
+        "dom.asynciterable",
+        "dom.extras",
+        "deno.ns",
+      ],
+      "types": [
+        `${alephPkgUri}/types.d.ts`,
+      ],
+    },
+    "importMap": "import_map.json",
+    "tasks": cliMode
+      ? {
+        "dev": `deno run -A ${alephPkgUri}/cli.ts dev`,
+        "start": `deno run -A ${alephPkgUri}/cli.ts start`,
+        "build": `deno run -A ${alephPkgUri}/cli.ts build`,
+      }
+      : {
+        "dev": `ALEPH_ENV=development deno run -A ${entry}`,
+        "start": `deno run -A ${entry}`,
+      },
+    "fmt": {},
+    "lint": {},
+  };
+  const gitignore = [];
+  if (cliMode) {
+    gitignore.push("dist/");
+  }
+  switch (template) {
+    case "react": {
+      Object.assign(importMap.imports, {
+        "aleph/react": `${alephPkgUri}/framework/react/mod.ts`,
+        "react": `https://esm.sh/react@${versions.react}`,
+        "react-dom": `https://esm.sh/react-dom@${versions.react}`,
+        "react-dom/": `https://esm.sh/react-dom@${versions.react}/`,
+      });
+      Object.assign(denoConfig.compilerOptions, {
+        "jsx": "react-jsx",
+        "jsxImportSource": `https://esm.sh/react@${versions.react}`,
+      });
+      break;
+    }
+    case "vue": {
+      Object.assign(importMap.imports, {
+        "aleph/vue": `${alephPkgUri}/framework/vue/mod.ts`,
+        "vue": `https://esm.sh/vue@${versions.vue}`,
+        "vue/server-renderer": `https://esm.sh/@vue/server-renderer@${versions.vue}`,
+        "*.vue": `${alephPkgUri}/loaders/vue.ts!loader`,
+      });
+      break;
+    }
+  }
+
+  if (unocss && confirm("Enable UnoCSS(atomic CSS)?")) {
+    Object.assign(importMap.imports, {
+      "@unocss/": `${alephPkgUri}/lib/@unocss/`,
+    });
+    const entryCode = await Deno.readTextFile(join(workingDir, entry));
+    await Deno.writeTextFile(
+      join(workingDir, entry),
+      `import presetUno from "@unocss/preset-uno.ts";\n` + entryCode.replace(
+        /(\s+)ssr: {/,
+        [
+          `$1unocss: {`,
+          `    // Options for UnoCSS (atomic CSS)`,
+          `    // please check https://alephjs.org/docs/unocss `,
+          `    presets: [`,
+          `      presetUno(),`,
+          `    ],`,
+          `    theme: {},`,
+          `  },`,
+          `  ssr: {`,
+        ].join("\n"),
+      ),
     );
-    console.log(`Please update ${blue(".github/workflows/deploy.yml")} with your project name.`);
+  }
+
+  await ensureDir(workingDir);
+  await Promise.all([
+    gitignore.length > 0 ? Deno.writeTextFile(join(workingDir, ".gitignore"), gitignore.join("\n")) : Promise.resolve(),
+    Deno.writeTextFile(join(workingDir, "deno.json"), JSON.stringify(denoConfig, undefined, 2)),
+    Deno.writeTextFile(join(workingDir, "import_map.json"), JSON.stringify(importMap, undefined, 2)),
+  ]);
+
+  if (cliMode && confirm("Deploy to Deno Deploy?")) {
+    const ciFile = join(workingDir, ".github/workflows/deploy.yml");
+    await ensureDir(dirname(ciFile));
+    await Deno.writeTextFile(ciFile, deployCI);
+    console.log(`${blue(".github/workflows/deploy.yml")} created, pelase update the project name in deploy.yml.`);
   }
 
   // todo: remove this step when deno-vsc support auto enable mode
@@ -198,10 +270,6 @@ jobs:
       "deno.enable": true,
       "deno.lint": true,
       "deno.config": "./deno.json",
-      "deno.suggest.imports.hosts": {
-        "https://deno.land": true,
-        "https://esm.sh": false,
-      },
     };
     await ensureDir(join(workingDir, ".vscode"));
     await Promise.all([
@@ -216,19 +284,26 @@ jobs:
     ]);
   }
 
-  console.log([
-    "",
-    green("Aleph.js is ready to go!"),
-    `${dim("▲")} cd ${name}`,
-    `${dim("▲")} deno task dev    ${dim("# start the app in `development` mode")}`,
-    `${dim("▲")} deno task start  ${dim("# start the app in `production` mode")}`,
-    `${dim("▲")} deno task build  ${dim("# build the app into a worker for serverless platforms like Deno Deploy")}`,
-    "",
-    `Docs: ${cyan("https://alephjs.org/docs")}`,
-    `Bugs: ${cyan("https://alephjs.org.com/alephjs/aleph.js/issues")}`,
-    "",
-  ].join("\n"));
+  console.log(
+    [
+      " ",
+      green("Aleph.js is ready to go!"),
+      `${dim("▲")} cd ${name}`,
+      `${dim("▲")} deno task dev    ${dim("# start the app in `development` mode")}`,
+      `${dim("▲")} deno task start  ${dim("# start the app in `production` mode")}`,
+      cliMode &&
+      `${dim("▲")} deno task build  ${dim("# build & optimize the app for serverless platform")}`,
+      " ",
+      `Docs: ${cyan("https://alephjs.org/docs")}`,
+      `Bugs: ${cyan("https://alephjs.org.com/alephjs/aleph.js/issues")}`,
+      " ",
+    ].filter(Boolean).join("\n"),
+  );
   Deno.exit(0);
+}
+
+if (import.meta.main) {
+  init();
 }
 
 async function isFolderEmpty(root: string, name: string): Promise<boolean> {

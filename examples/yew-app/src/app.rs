@@ -1,47 +1,50 @@
+use std::collections::HashMap;
+use url::Url;
 use yew::prelude::*;
+use yew_router::history::{AnyHistory, History, MemoryHistory};
+use yew_router::prelude::*;
+
+use crate::components::header::Header;
+use crate::routes::index::Index;
+use crate::routes::todos::Todos;
+use crate::routes::_404::NotFound;
+use crate::shared::Route;
+
+#[derive(Properties, PartialEq, Default)]
+pub struct AppProps {
+  pub ssr_url: Option<String>,
+}
 
 #[function_component]
-pub fn App() -> Html {
-    let counter = use_state(|| 0);
-    let onclick = {
-        let counter = counter.clone();
-        move |_| {
-            let value = *counter + 1;
-            counter.set(value);
-        }
-    };
-
-    html! {
-      <div class="index screen">
-        <p class="logo">
-          <img src="/assets/logo.svg" width="70" height="70" title="Aleph.js" />
-          <img src="/assets/yew.png" width="70" height="70" title="Yew" />
-        </p>
-        <h1>{"The Fullstack Framework in Deno."}</h1>
-        <p>
-          <strong>{"Aleph.js"}</strong>
-          {" gives you the best developer experience for building web applications"}
-          <br />
-          {"with modern toolings."} <label>{"Yew SSR experimental version"}</label>{"."}
-        </p>
-        <div class="external-links">
-          <a href="https://alephjs.org/docs/get-started" target="_blank">
-            {"Get Started"}
-          </a>
-          <a href="https://alephjs.org/docs" target="_blank">
-            {"Docs"}
-          </a>
-          <a href="https://github.com/xuybin/alephjs" target="_blank">
-            {"Github"}
-          </a>
-        </div>
-        <nav>
-          <button onclick={onclick}>
-            {"Counter:"}
-            <strong>{ *counter }</strong>
-            <small>{"Click to add 1"}</small>
-          </button>
-        </nav>
-      </div>
+pub fn App(props: &AppProps) -> Html {
+  if let Some(url) = &props.ssr_url {
+    let history = AnyHistory::from(MemoryHistory::new());
+    let url = Url::parse(url).unwrap();
+    let mut queries: HashMap<String, String> = HashMap::new();
+    for (key, value) in url.query_pairs() {
+      queries.insert(key.into(), value.into());
     }
+    history.push_with_query(url.path(), queries).unwrap();
+    html! {
+      <Router history={history}>
+        <Header/>
+        <Switch<Route> render={switch} />
+     </Router>
+    }
+  } else {
+    html! {
+      <BrowserRouter>
+        <Header/>
+        <Switch<Route> render={switch} />
+      </BrowserRouter>
+    }
+  }
+}
+
+fn switch(routes: Route) -> Html {
+  match routes {
+    Route::Home => html! { <Index /> },
+    Route::Todos => html! { <Todos /> },
+    Route::NotFound => html! { <NotFound/> },
+  }
 }

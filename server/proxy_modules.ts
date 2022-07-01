@@ -1,16 +1,15 @@
 import MagicString from "https://esm.sh/magic-string@0.26.2";
-import { parseDeps } from "https://deno.land/x/aleph_compiler@0.6.1/mod.ts";
+import { parseDeps } from "https://deno.land/x/aleph_compiler@0.6.6/mod.ts";
 import log from "../lib/log.ts";
-import { getContentType } from "../lib/mime.ts";
+import { getContentType } from "../lib/media_type.ts";
 import { serveDir } from "../lib/serve.ts";
 import util from "../lib/util.ts";
 import { bundleCSS } from "./bundle_css.ts";
 import { DependencyGraph } from "./graph.ts";
-import { builtinModuleExts, getUnoGenerator } from "./helpers.ts";
+import { builtinModuleExts } from "./helpers.ts";
 import type { ImportMap, ModuleLoader, ModuleLoaderEnv, ModuleLoaderOutput } from "./types.ts";
 
-const cssModuleLoader = async (pathname: string, env: ModuleLoaderEnv) => {
-  const specifier = "." + pathname;
+const cssModuleLoader = async (specifier: string, env: ModuleLoaderEnv) => {
   const { code, cssModulesExports, deps } = await bundleCSS(
     specifier,
     await Deno.readTextFile(specifier),
@@ -24,7 +23,7 @@ const cssModuleLoader = async (pathname: string, env: ModuleLoaderEnv) => {
         safari: 14,
       },
       minify: !env.isDev,
-      cssModules: pathname.endsWith(".module.css"),
+      cssModules: specifier.endsWith(".module.css"),
     },
   );
   const serverDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_SERVER_DEP_GRAPH");
@@ -38,30 +37,24 @@ const cssModuleLoader = async (pathname: string, env: ModuleLoaderEnv) => {
   };
 };
 
-const esModuleLoader = async (input: { pathname: string } & ModuleLoaderOutput, env: ModuleLoaderEnv) => {
+const esModuleLoader = async (input: { specifier: string } & ModuleLoaderOutput, env: ModuleLoaderEnv) => {
   const serverDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_SERVER_DEP_GRAPH");
   if (!serverDependencyGraph) {
     throw new Error("The `serverDependencyGraph` is not defined");
   }
 
-  const { code, pathname, lang, inlineCSS, isTemplateLanguage } = input;
+  const { code, specifier, lang, inlineCSS } = input;
   if (lang === "css") {
     throw new Error("The `lang` can't be `css`");
   }
 
-  const specifier = "." + pathname;
-  const isTpl = isTemplateLanguage || lang === "jsx" || lang === "tsx" || util.endsWithAny(pathname, ".tsx", ".jsx");
-  const unoGenerator = isTpl ? getUnoGenerator() : null;
-  const [deps, atomicCSS] = await Promise.all([
-    parseDeps(specifier, code, { importMap: JSON.stringify(env.importMap), lang }),
-    unoGenerator ? unoGenerator.generate(code).then((ret) => ({ tokens: [...ret.matched] })) : undefined,
-  ]);
+  const deps = await parseDeps(specifier, code, { importMap: JSON.stringify(env.importMap), lang });
   const headers: HeadersInit = [];
   if (lang) {
     headers.push(["Content-Type", getContentType(`file.${lang}`)]);
     headers.push(["X-Language", lang]);
   }
-  serverDependencyGraph.mark(specifier, { deps, inlineCSS, atomicCSS });
+  serverDependencyGraph.mark(specifier, { deps, inlineCSS });
   if (deps.length) {
     const s = new MagicString(code);
     deps.forEach((dep) => {
@@ -87,18 +80,16 @@ const esModuleLoader = async (input: { pathname: string } & ModuleLoaderOutput, 
 function initLoader(moduleLoaders: ModuleLoader[], env: ModuleLoaderEnv) {
   return async (req: Request): Promise<{ content: string | Uint8Array; contentType?: string } | undefined> => {
     const { pathname } = new URL(req.url);
+    const specifier = "." + pathname;
     if (pathname.endsWith(".css")) {
-      return await cssModuleLoader(pathname, env);
+      return await cssModuleLoader(specifier, env);
     } else if (builtinModuleExts.findIndex((ext) => pathname.endsWith(`.${ext}`)) !== -1) {
-      return await esModuleLoader({ pathname, code: await Deno.readTextFile(`.${pathname}`) }, env);
+      return await esModuleLoader({ specifier, code: await Deno.readTextFile(specifier) }, env);
     } else {
       const loader = moduleLoaders.find((loader) => loader.test(pathname));
       if (loader) {
-        let ret = loader.load(pathname, env);
-        if (ret instanceof Promise) {
-          ret = await ret;
-        }
-        return await esModuleLoader(Object.assign(ret, { pathname }), env);
+        const ret = await loader.load(specifier, await Deno.readTextFile(specifier), env);
+        return await esModuleLoader(Object.assign(ret, { specifier }), env);
       }
     }
   };

@@ -1,16 +1,20 @@
 import type { UserConfig as UnoConfig } from "../lib/@unocss/core.ts";
 
 export type AlephConfig = {
+  appDir?: string;
   /** The config for file-system based routing.  */
   routes?: string;
+  /** The pre-imported modules of FS routing,  */
+  routeModules?: Record<string, Record<string, unknown>>;
   /** The build options for `build` command. */
   build?: BuildOptions;
   /** The config for UnoCSS. */
-  unocss?: UnoConfig;
+  unocss?: UnoConfig & { test?: RegExp };
   /** The config for dev server. */
   devServer?: {
+    /** The handler for fs watch event */
     watchFS?: (kind: "create" | "remove" | "modify", specifier: string) => void;
-    /** The url for HMR web socket. This is useful for dev server proxy env. */
+    /** The url for HMR web socket. This is useful for dev server proxy mode. */
     hmrWebSocketUrl?: string;
   };
 };
@@ -28,9 +32,9 @@ export type BuildOptions = {
   outputDir?: string;
 };
 
-export type FetchHandler = {
+export interface FetchHandler {
   (request: Request, context: Record<string, unknown>): Promise<Response> | Response;
-};
+}
 
 export interface Middleware {
   name?: string;
@@ -54,11 +58,6 @@ export type JSXConfig = {
   jsxRuntimeCdnVersion?: string;
 };
 
-export type ModuleLoader = {
-  test(pathname: string): boolean;
-  load(pathname: string, env: ModuleLoaderEnv): Promise<ModuleLoaderOutput> | ModuleLoaderOutput;
-};
-
 export type ModuleLoaderEnv = {
   importMap?: ImportMap;
   isDev?: boolean;
@@ -69,8 +68,12 @@ export type ModuleLoaderOutput = {
   code: string;
   inlineCSS?: string;
   lang?: "js" | "jsx" | "ts" | "tsx" | "css";
-  isTemplateLanguage?: boolean;
   map?: string;
 };
+
+export interface ModuleLoader {
+  test(pathname: string): boolean;
+  load(specifier: string, content: string, env: ModuleLoaderEnv): Promise<ModuleLoaderOutput> | ModuleLoaderOutput;
+}
 
 export { UnoConfig };

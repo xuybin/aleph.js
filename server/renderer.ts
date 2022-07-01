@@ -1,12 +1,14 @@
-import FetchError from "../framework/core/fetch_error.ts";
-import type { RouteModule, RouteTable } from "../framework/core/route.ts";
+import { join } from "https://deno.land/std@0.145.0/path/mod.ts";
+import { FetchError } from "../framework/core/error.ts";
+import type { RouteConfig, RouteModule } from "../framework/core/route.ts";
 import { matchRoutes } from "../framework/core/route.ts";
 import util from "../lib/util.ts";
 import type { DependencyGraph, Module } from "./graph.ts";
-import { builtinModuleExts, getDeploymentId, getUnoGenerator } from "./helpers.ts";
+import { getDeploymentId, getFiles, getUnoGenerator } from "./helpers.ts";
 import type { Element, HTMLRewriterHandlers } from "./html.ts";
 import { HTMLRewriter } from "./html.ts";
 import { importRouteModule } from "./routing.ts";
+import type { AlephConfig } from "./types.ts";
 
 export type SSRContext = {
   readonly url: URL;
@@ -25,8 +27,8 @@ export type SSRFn = {
 // Options for the content-security-policy
 // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy
 export type CSP = {
-  nonce?: boolean;
   getPolicy: (url: URL, nonce?: string) => string | null;
+  nonce?: boolean;
 };
 
 export type SSR = {
@@ -51,10 +53,9 @@ export type SSRResult = {
 
 export type RenderOptions = {
   indexHtml: Uint8Array;
-  routeTable: RouteTable;
+  routeConfig: RouteConfig | null;
   customHTMLRewriter: [selector: string, handlers: HTMLRewriterHandlers][];
-  isDev: boolean;
-  noProxy?: boolean;
+  isDev?: boolean;
   ssr?: SSR;
 };
 
@@ -63,7 +64,7 @@ const bootstrapScript = `data:text/javascript;charset=utf-8;base64,${btoa("/* st
 
 export default {
   async fetch(req: Request, ctx: Record<string, unknown>, options: RenderOptions): Promise<Response> {
-    const { indexHtml, routeTable, customHTMLRewriter, isDev, ssr } = options;
+    const { indexHtml, routeConfig, customHTMLRewriter, isDev, ssr } = options;
     const headers = new Headers(ctx.headers as Headers);
     let ssrRes: SSRResult | null = null;
     if (typeof ssr === "function" || typeof ssr?.render === "function") {
@@ -72,7 +73,7 @@ export default {
       const cc = !isFn ? ssr.cacheControl : "public";
       const CSP = isFn ? undefined : ssr.CSP;
       const render = isFn ? ssr : ssr.render;
-      const [url, routeModules, deferedData] = await initSSR(req, ctx, routeTable, dataDefer, options.noProxy);
+      const [url, routeModules, deferedData] = await initSSR(req, ctx, routeConfig, dataDefer);
       const headCollection: string[] = [];
       const ssrContext: SSRContext = {
         url,
@@ -85,15 +86,17 @@ export default {
           // todo: handle suspense ssr error
         },
       };
-      const body = await render(ssrContext);
+
+      let body = await render(ssrContext);
+      if (typeof body !== "string" && !(body instanceof ReadableStream)) {
+        body = "";
+      }
+
+      // find inline css
       const serverDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_SERVER_DEP_GRAPH");
       if (serverDependencyGraph) {
-        const unocssTokens: ReadonlyArray<string>[] = [];
         const lookupModuleStyle = (mod: Module) => {
-          const { specifier, atomicCSS, inlineCSS } = mod;
-          if (atomicCSS) {
-            unocssTokens.push(atomicCSS.tokens);
-          }
+          const { specifier, inlineCSS } = mod;
           if (inlineCSS) {
             headCollection.push(`<style data-module-id="${specifier}">${inlineCSS}</style>`);
           }
@@ -101,28 +104,40 @@ export default {
         for (const { filename } of routeModules) {
           serverDependencyGraph.shallowWalk(filename, lookupModuleStyle);
         }
-        for (const serverEntry of builtinModuleExts.map((ext) => `./server.${ext}`)) {
-          if (serverDependencyGraph.get(serverEntry)) {
-            serverDependencyGraph.shallowWalk(serverEntry, lookupModuleStyle);
-            break;
-          }
-        }
-        if (unocssTokens.length > 0) {
-          const unoGenerator = getUnoGenerator();
-          if (unoGenerator) {
-            const start = performance.now();
-            const { css } = await unoGenerator.generate(new Set(unocssTokens.flat()), {
+      }
+
+      // build unocss
+      const config: AlephConfig | undefined = Reflect.get(globalThis, "__ALEPH_CONFIG");
+      if (config?.unocss?.presets) {
+        const test: RegExp = config.unocss.test ?? /\.(jsx|tsx)$/;
+        const dir = config?.appDir ? join(Deno.cwd(), config.appDir) : Deno.cwd();
+        const files = await getFiles(dir);
+        const inputSources = await Promise.all(
+          files.filter((name) => test.test(name)).map((name) => Deno.readTextFile(join(dir, name))),
+        );
+        const unoGenerator = getUnoGenerator();
+        if (unoGenerator) {
+          const start = performance.now();
+          let css = Reflect.get(globalThis, "__ALEPH_GLOBAL_UNOCSS");
+          if (!css) {
+            const ret = await unoGenerator.generate(inputSources.join("\n"), {
               minify: !isDev,
             });
-            if (css) {
-              const buildTime = performance.now() - start;
-              headCollection.push(
-                `<style data-unocss="${unoGenerator.version}" data-build-time="${buildTime}ms">${css}</style>`,
-              );
+            css = ret.css;
+            if (!isDev) {
+              Reflect.set(globalThis, "__ALEPH_GLOBAL_UNOCSS", css);
             }
+          }
+          if (css) {
+            const buildTime = performance.now() - start;
+            headCollection.push(
+              `<link rel="stylesheet" href="/-/esm.sh/@unocss/reset@0.41.1/tailwind.css">`,
+              `<style data-unocss="${unoGenerator.version}" data-build-time="${buildTime}ms">${css}</style>`,
+            );
           }
         }
       }
+
       if (routeModules.every(({ dataCacheTtl: ttl }) => typeof ttl === "number" && !Number.isNaN(ttl) && ttl > 0)) {
         const ttls = routeModules.map(({ dataCacheTtl }) => Number(dataCacheTtl));
         headers.append("Cache-Control", `${cc}, max-age=${Math.min(...ttls)}`);
@@ -133,10 +148,10 @@ export default {
         context: ssrContext,
         body,
         deferedData,
-        is404: routeModules.length === 0 || routeModules.at(-1)?.url.pathname ===
-            "/_404",
+        is404: routeConfig !== null && (routeModules.length === 0 || routeModules.at(-1)?.url.pathname ===
+            "/_404"),
       };
-      if (CSP) {
+      if (!isDev && CSP) {
         const nonce = CSP.nonce ? Date.now().toString(36) : undefined;
         const policy = CSP.getPolicy(url, nonce!);
         if (policy) {
@@ -191,9 +206,11 @@ export default {
         // inject the roures manifest
         rewriter.on("head", {
           element(el: Element) {
-            const { routes } = routeTable;
-            if (routes.length > 0) {
-              const json = JSON.stringify({ routes: routes.map(([_, meta]) => meta) });
+            if (routeConfig && routeConfig.routes.length > 0) {
+              const json = JSON.stringify({
+                routes: routeConfig.routes.map(([_, meta]) => meta),
+                prefix: routeConfig.prefix,
+              });
               el.append(`<script id="routes-manifest" type="application/json">${json}</script>`, {
                 html: true,
               });
@@ -330,32 +347,35 @@ export default {
 async function initSSR(
   req: Request,
   ctx: Record<string, unknown>,
-  routeTable: RouteTable,
+  routeConfig: RouteConfig | null,
   dataDefer: boolean,
-  noProxy?: boolean,
 ): Promise<[
   url: URL,
   routeModules: RouteModule[],
   deferedData: Record<string, unknown>,
 ]> {
   const url = new URL(req.url);
-  const matches = matchRoutes(url, routeTable);
+  if (!routeConfig) {
+    return [url, [], {}];
+  }
+
+  const matches = matchRoutes(url, routeConfig);
   const deferedData: Record<string, unknown> = {};
 
   // import module and fetch data for each matched route
-  const modules = await Promise.all(matches.map(async ([ret, { filename }]) => {
-    const mod = await importRouteModule(filename, noProxy);
+  const modules = await Promise.all(matches.map(async ([ret, meta]) => {
+    const mod = await importRouteModule(meta);
     const dataConfig = util.isPlainObject(mod.data) ? mod.data : mod;
     const rmod: RouteModule = {
       url: new URL(ret.pathname.input + url.search, url.href),
       params: ret.pathname.groups,
-      filename: filename,
+      filename: meta.filename,
       defaultExport: mod.default,
       dataCacheTtl: dataConfig?.cacheTtl as (number | undefined),
     };
 
     // assign route params to context
-    Object.assign(ctx.params, ret.pathname.groups);
+    Object.assign(ctx.params as Record<string, string>, ret.pathname.groups);
 
     // check the `get` method of data, if `suspense` is enabled then return a promise instead
     const fetcher = dataConfig.get ?? dataConfig.GET;

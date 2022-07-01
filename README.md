@@ -5,7 +5,8 @@
   <a href="https://twitter.com/intent/follow?screen_name=alephjs"><img src="https://img.shields.io/twitter/follow/alephjs?style=social" alt="Twitter"></a>
 </p>
 
-> ⚠️ WE ARE CURRENTLY REWRITING THIS FRAMEWORK, MANY THINGS ARE STILL SUBJECT TO CHANGE AT ANY TIME.
+> ⚠️ Not yet 1.0. Many things are subject to change. Documentation is lacking in many places. Try it out and give us
+> feedback!
 
 Some demo apps deployed to [Deno Deploy](https://deno.com/deploy) with the new architecture:
 
@@ -18,7 +19,7 @@ Some demo apps deployed to [Deno Deploy](https://deno.com/deploy) with the new a
 - Yew SSR: https://aleph-yew.deno.dev/
 - Github OAuth Middleware: https://aleph-github-oauth.deno.dev/
 
-> **Source code**: https://github.com/xuybin/alephjs/tree/main/examples
+> **Source code**: https://github.com/alephjs/aleph.js/tree/main/examples
 
 ## Real-world Apps
 
@@ -30,7 +31,7 @@ Initialize a new project, you can pick a start template with `--template` flag, 
 `[react, vue, api, yew]`
 
 ```bash
-deno run -A -r https://deno.land/x/alephjs/cli.ts init --template react
+deno run -A -r https://deno.land/x/alephjs@1.0.0-alpha.78.1/cli.ts init --template react
 ```
 
 after `init`, you can run the app with deno tasks:

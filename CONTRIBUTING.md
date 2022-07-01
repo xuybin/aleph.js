@@ -16,7 +16,7 @@ You will need [Deno](https://deno.land/) 1.20+.
 3. Create a new branch `git checkout -b BRANCH_NAME`.
 4. Change code then run the examples.
 5. [Push your branch to Github after all tests passed.](#Testing)
-6. Make a [pull request](https://github.com/xuybin/alephjs/pulls).
+6. Make a [pull request](https://github.com/alephjs/aleph.js/pulls).
 7. Merge to master branch by our maintainers.
 
 ### react-app
@@ -50,7 +50,7 @@ deno task build examples/vue-app
 You can run all tests with the following command:
 
 ```bash
-deno task test
+deno task test -A
 ```
 
 ## Project Structure

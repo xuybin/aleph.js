@@ -1,14 +1,15 @@
-import { basename, dirname, extname, join } from "https://deno.land/std@0.142.0/path/mod.ts";
-import { ensureDir } from "https://deno.land/std@0.142.0/fs/ensure_dir.ts";
-import { build as esbuild, type Loader, stop } from "https://deno.land/x/esbuild_deno@v0.14.42.1/native/mod.js";
-import { parseExportNames } from "https://deno.land/x/aleph_compiler@0.6.1/mod.ts";
-import { existsDir, existsFile } from "../lib/fs.ts";
-import { parseHtmlLinks } from "./html.ts";
+// @deno-types="https://deno.land/x/esbuild@v0.14.47/mod.d.ts"
+import { build as esbuild, type Loader, stop } from "https://deno.land/x/esbuild_deno@v0.14.47/native/mod.js";
+import { basename, dirname, extname, join } from "https://deno.land/std@0.145.0/path/mod.ts";
+import { ensureDir } from "https://deno.land/std@0.145.0/fs/ensure_dir.ts";
+import { parseExportNames } from "https://deno.land/x/aleph_compiler@0.6.6/mod.ts";
 import log from "../lib/log.ts";
 import util from "../lib/util.ts";
 import type { DependencyGraph } from "./graph.ts";
 import {
   builtinModuleExts,
+  existsDir,
+  existsFile,
   getAlephPkgUri,
   initModuleLoaders,
   loadImportMap,
@@ -16,6 +17,7 @@ import {
   restoreUrl,
   toLocalPath,
 } from "./helpers.ts";
+import { parseHtmlLinks } from "./html.ts";
 import { initRoutes } from "./routing.ts";
 import type { AlephConfig, BuildPlatform } from "./types.ts";
 
@@ -34,8 +36,7 @@ const supportedPlatforms: Record<BuildPlatform, string> = {
  *
  * after build, you need to bootstrap the server from `./dist/server.js`
  */
-export async function build(serverEntry?: string) {
-  const workingDir = Deno.cwd();
+export async function build(serverEntry: string | undefined) {
   const alephPkgUri = getAlephPkgUri();
   const importMap = await loadImportMap();
   const jsxCofig = await loadJSXConfig(importMap);
@@ -43,7 +44,7 @@ export async function build(serverEntry?: string) {
   const config: AlephConfig | undefined = Reflect.get(globalThis, "__ALEPH_CONFIG");
   const platform = config?.build?.platform ?? "deno";
   const target = config?.build?.target ?? "es2020";
-  const outputDir = join(workingDir, config?.build?.outputDir ?? "dist");
+  const outputDir = join(Deno.cwd(), config?.build?.outputDir ?? "dist");
   const modulesProxyPort = Deno.env.get("ALEPH_MODULES_PROXY_PORT");
 
   if (platform === "cloudflare" || platform === "vercel") {
@@ -88,7 +89,7 @@ export async function build(serverEntry?: string) {
     `globalThis.__ALEPH_SERVER_DEP_GRAPH = new DependencyGraph(graph.modules);`,
     routeFiles.length > 0 && `import { revive } from "${alephPkgUri}/server/routing.ts";`,
     moduleLoaders.length > 0 &&
-    `import { globToRegExp } from "https://deno.land/std@0.142.0/path/mod.ts";const moduleLoaders = []; globalThis["__ALEPH_MODULE_LOADERS"] = moduleLoaders;`,
+    `import { globToRegExp } from "https://deno.land/std@0.145.0/path/mod.ts";const moduleLoaders = []; globalThis["__ALEPH_MODULE_LOADERS"] = moduleLoaders;`,
     moduleLoaders.length > 0 &&
     moduleLoaders.map((loader) => {
       const meta = Reflect.get(loader, "meta");
@@ -109,12 +110,8 @@ export async function build(serverEntry?: string) {
       }
       const url = `http://localhost:${modulesProxyPort}${filename.slice(1)}`;
       return [
-        `import { ${exportNames.map((name, i) => `${name} as ${"$".repeat(i + 1)}${idx}`).join(", ")} } from ${
-          JSON.stringify(url)
-        };`,
-        `revive(${JSON.stringify(filename)}, { ${
-          exportNames.map((name, i) => `${name}: ${"$".repeat(i + 1)}${idx}`).join(", ")
-        } });`,
+        `import * as $${idx} from ${JSON.stringify(url)};`,
+        `revive(${JSON.stringify(filename)}, $${idx});`,
       ];
     }),
     serverEntry && `import "http://localhost:${modulesProxyPort}/${basename(serverEntry)}";`,
@@ -251,7 +248,7 @@ export async function build(serverEntry?: string) {
     }],
   });
 
-  // get depndency graph
+  // get dependency graph
   const serverDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_SERVER_DEP_GRAPH");
   const clientDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_CLIENT_DEP_GRAPH");
 
@@ -266,8 +263,8 @@ export async function build(serverEntry?: string) {
 
   // look up client modules
   let tasks = routeFiles.map(([filename]) => filename);
-  if (await existsFile(join(workingDir, "index.html"))) {
-    const html = await Deno.readFile(join(workingDir, "index.html"));
+  if (await existsFile("index.html")) {
+    const html = await Deno.readFile("index.html");
     const links = await parseHtmlLinks(html);
     for (const src of links) {
       const url = new URL(src, "http://localhost/");
@@ -304,6 +301,9 @@ export async function build(serverEntry?: string) {
           serverHandler(req),
           Deno.open(savePath, { write: true, create: true }),
         ]);
+        if (res.headers.has("X-Transform-Error")) {
+          throw new Error("Transform Error");
+        }
         await res.body?.pipeTo(file.writable);
         if (!isCSS) {
           clientDependencyGraph?.get(specifier)?.deps?.forEach(({ specifier, dynamic }) => {

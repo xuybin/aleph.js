@@ -37,7 +37,7 @@ import { Link } from "aleph/vue";
         </Link>
       </h1>
       <nav :style='{ display: "flex", alignItems: "center", gap: "20px" }'>
-        <a href="https://deno.land/x/aleph" :style='{ fontSize: "20px", color: "#454545", }'>
+        <a href="https://deno.land/x/alephjs" :style='{ fontSize: "20px", color: "#454545", }'>
           <svg xmlns="http://www.w3.org/2000/svg" :style='{ width: "1em", height: "1em", }' viewBox="0 0 512 512">
             <title>Deno Land</title>
             <mask id="deno-logo-mask">
@@ -51,7 +51,7 @@ import { Link } from "aleph/vue";
             <circle mask="url(#a)" cx="262" cy="203" r="16" />
           </svg>
         </a>
-        <a href="https://github.com/xuybin/alephjs" :style='{ fontSize: "20px", color: "#454545", }'>
+        <a href="https://github.com/alephjs/aleph.js" :style='{ fontSize: "20px", color: "#454545", }'>
           <svg viewBox="0 0 1024 1024" :style='{ width: "1em", height: "1em", }' fill="currentColor">
             <title>Github</title>
             <path
