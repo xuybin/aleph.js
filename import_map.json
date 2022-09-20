@@ -19,6 +19,7 @@
     "@vue/server-renderer": "https://esm.sh/@vue/server-renderer@3.2.37",
     "solid-js": "https://esm.sh/solid-js@1.5.5",
     "solid-js/web": "https://esm.sh/solid-js@1.5.5/web",
-    "solid-refresh": "https://esm.sh/solid-refresh@0.4.1"
+    "solid-refresh": "https://esm.sh/solid-refresh@0.4.1",
+    "https://deno.land/x/esbuild@v0.15.7/mod.js": "https://rewrite.deno.dev/x/esbuild@v0.15.7/mod.js?searchValue=registry.npmjs.org&replacer=registry.npmmirror.com"
   }
 }
