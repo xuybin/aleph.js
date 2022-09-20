@@ -1,16 +1,24 @@
 {
   "imports": {
-    "std/": "https://deno.land/std@0.145.0/",
-    "@unocss/": "./lib/@unocss/",
+    "std/": "https://deno.land/std@0.155.0/",
+    "@unocss/core": "https://esm.sh/@unocss/core@0.45.14",
+    "@unocss/preset-uno": "https://esm.sh/@unocss/preset-uno@0.45.14",
     "aleph/": "./",
     "aleph/server": "./server/mod.ts",
-    "aleph/react": "./framework/react/mod.ts",
-    "aleph/vue": "./framework/vue/mod.ts",
-    "react": "https://esm.sh/react@18.1.0",
-    "react-dom": "https://esm.sh/react-dom@18.1.0",
-    "react-dom/": "https://esm.sh/react-dom@18.1.0/",
+    "aleph/dev": "./server/dev.ts",
+    "aleph/react": "./runtime/react/mod.ts",
+    "aleph/react-client": "./runtime/react/client.ts",
+    "aleph/react-server": "./runtime/react/server.ts",
+    "aleph/vue": "./runtime/vue/mod.ts",
+    "aleph/vue-server": "./runtime/vue/server.ts",
+    "aleph/solid-server": "./runtime/solid/server.ts",
+    "react": "https://esm.sh/react@18.2.0",
+    "react-dom": "https://esm.sh/react-dom@18.2.0",
+    "react-dom/": "https://esm.sh/react-dom@18.2.0/",
     "vue": "https://esm.sh/vue@3.2.37",
-    "vue/server-renderer": "https://esm.sh/@vue/server-renderer@3.2.37",
-    "*.vue": "./loaders/vue.ts!loader"
+    "@vue/server-renderer": "https://esm.sh/@vue/server-renderer@3.2.37",
+    "solid-js": "https://esm.sh/solid-js@1.5.5",
+    "solid-js/web": "https://esm.sh/solid-js@1.5.5/web",
+    "solid-refresh": "https://esm.sh/solid-refresh@0.4.1"
   }
 }

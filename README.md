@@ -10,8 +10,8 @@
 
 Some demo apps deployed to [Deno Deploy](https://deno.com/deploy) with the new architecture:
 
-- React Hello-world: https://aleph-hello.deno.dev/
-- Vue Hello-world: https://aleph-vue.deno.dev/
+- React App: https://aleph-hello.deno.dev/
+- Vue App: https://aleph-vue.deno.dev/
 - REST API: https://aleph-api.deno.dev/
 - React 18 Suspense SSR: https://aleph-suspense-ssr.deno.dev/
 - UnoCSS(tailwind): https://aleph-unocss.deno.dev/
@@ -24,6 +24,7 @@ Some demo apps deployed to [Deno Deploy](https://deno.com/deploy) with the new a
 ## Real-world Apps
 
 - Deno Deploy: https://dash.deno.com
+- Meet Me: https://meet-me.deno.dev ([source](https://github.com/denoland/meet-me))
 
 ## Get started
 
@@ -31,7 +32,7 @@ Initialize a new project, you can pick a start template with `--template` flag, 
 `[react, vue, api, yew]`
 
 ```bash
-deno run -A -r https://deno.land/x/alephjs@1.0.0-alpha.78.1/cli.ts init --template react
+deno run -A https://deno.land/x/aleph@1.0.0-beta.10/init.ts
 ```
 
 after `init`, you can run the app with deno tasks:
@@ -45,9 +46,6 @@ deno task dev
 
 # run the app in production mode
 deno task start
-
-# build the app for severless deployment
-deno task build
 ```
 
 ## Documentation

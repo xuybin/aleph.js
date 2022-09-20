@@ -1,15 +1,10 @@
-import { setCookieHeader } from "./helpers.ts";
-
-export interface SessionStorage {
-  get(sid: string): Promise<unknown | undefined>;
-  set(sid: string, data: unknown, expires: number): Promise<void>;
-  delete(sid: string): Promise<void>;
-}
+import { cookieHeader } from "./helpers.ts";
+import type { Session, SessionOptions, SessionStorage } from "./types.ts";
 
 export class MemorySessionStorage implements SessionStorage {
-  #store: Map<string, [unknown, number]> = new Map();
+  #store: Map<string, [Record<string, unknown>, number]> = new Map();
 
-  get(sid: string): Promise<unknown | undefined> {
+  get(sid: string): Promise<Record<string, unknown> | undefined> {
     const [data, expires] = this.#store.get(sid) ?? [undefined, 0];
     if (expires > 0 && Date.now() > expires) {
       this.#store.delete(sid);
@@ -18,7 +13,7 @@ export class MemorySessionStorage implements SessionStorage {
     return Promise.resolve(data);
   }
 
-  set(sid: string, data: unknown, expires: number): Promise<void> {
+  set(sid: string, data: Record<string, unknown>, expires: number): Promise<void> {
     this.#store.set(sid, [data, expires]);
     return Promise.resolve();
   }
@@ -31,22 +26,7 @@ export class MemorySessionStorage implements SessionStorage {
 
 const defaultSessionStorage = new MemorySessionStorage();
 
-export interface SessionCookieOptions {
-  name?: string;
-  domain?: string;
-  path?: string;
-  secure?: boolean;
-  sameSite?: "lax" | "strict" | "none";
-}
-
-export interface SessionOptions {
-  storage?: SessionStorage;
-  cookie?: SessionCookieOptions;
-  secret?: string;
-  maxAge?: number;
-}
-
-export class SessionImpl<StoreType extends Record<string, unknown>> {
+export class SessionImpl<StoreType extends Record<string, unknown>> implements Session<StoreType> {
   #id: string;
   #options: SessionOptions;
   #store: StoreType | undefined;
@@ -70,7 +50,10 @@ export class SessionImpl<StoreType extends Record<string, unknown>> {
     this.#store = (await this.#storage.get(this.#id)) as StoreType | undefined;
   }
 
-  async update(store: StoreType | ((prev: StoreType | undefined) => StoreType)): Promise<string> {
+  async update(
+    store: StoreType | ((prev: StoreType | undefined) => StoreType),
+    redirect: string,
+  ): Promise<Response> {
     if (typeof store !== "object" && typeof store !== "function") {
       throw new Error("store must be a valid object or a function");
     }
@@ -82,9 +65,11 @@ export class SessionImpl<StoreType extends Record<string, unknown>> {
       nextStore = store;
     }
 
+    // save the new store
     await this.#storage.set(this.#id, nextStore, Date.now() + 1000 * (this.#options.maxAge ?? 1800));
     this.#store = nextStore;
-    return setCookieHeader(
+
+    const cookie = cookieHeader(
       this.#options.cookie?.name ?? "session",
       this.#id,
       {
@@ -92,12 +77,19 @@ export class SessionImpl<StoreType extends Record<string, unknown>> {
         expires: new Date(Date.now() + 1000 * (this.#options.maxAge ?? 1800)),
       },
     );
+    return new Response("", {
+      status: 302,
+      headers: { "Set-Cookie": cookie, "Location": redirect },
+    });
   }
 
-  async end(): Promise<string> {
-    await this.#storage.delete(this.#id);
+  async end(redirect: string): Promise<Response> {
+    if (!this.#store) {
+      await this.#storage.delete(this.#id);
+    }
     this.#store = undefined;
-    return setCookieHeader(
+
+    const cookie = cookieHeader(
       this.#options.cookie?.name ?? "session",
       "",
       {
@@ -105,5 +97,9 @@ export class SessionImpl<StoreType extends Record<string, unknown>> {
         expires: new Date(0),
       },
     );
+    return new Response("", {
+      status: 302,
+      headers: { "Set-Cookie": cookie, "Location": redirect },
+    });
   }
 }

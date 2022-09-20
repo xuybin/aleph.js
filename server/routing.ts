@@ -1,30 +1,50 @@
-import { extname, globToRegExp, join } from "https://deno.land/std@0.145.0/path/mod.ts";
-import type { Route, RouteConfig, RouteMatch, RouteMeta } from "../framework/core/route.ts";
-import { URLPatternCompat, type URLPatternInput } from "../framework/core/url_pattern.ts";
-import log from "../lib/log.ts";
-import util from "../lib/util.ts";
-import type { DependencyGraph } from "./graph.ts";
-import { fixResponse, getFiles, toResponse } from "./helpers.ts";
-import type { AlephConfig } from "./types.ts";
+import { URLPatternCompat, type URLPatternInput } from "../runtime/core/url_pattern.ts";
+import util from "../shared/util.ts";
+import { extname, fromFileUrl, globToRegExp, join, resolve } from "./deps.ts";
+import depGraph from "./graph.ts";
+import log from "./log.ts";
+import { builtinModuleExts, fixResponse, getAlephConfig, getFiles, toResponse } from "./helpers.ts";
+import type { Route, RouteMatch, RouteMeta, Router, RouteRegExp, RouterInit } from "./types.ts";
 
-const revivedModules: Map<string, Record<string, unknown>> = new Map();
+/** import the route module. */
+export async function importRouteModule({ filename, pattern }: RouteMeta, appDir?: string) {
+  const config = getAlephConfig();
+  const routes = config?.router?.routes;
+  if (routes && pattern.pathname in routes) {
+    return routes[pattern.pathname];
+  }
+
+  const version = depGraph.get(filename)?.version;
+  const useTls = Deno.env.get("ALEPH_SERVER_TLS");
+  const hostname = Deno.env.get("ALEPH_SERVER_HOST");
+  const devPort = Deno.env.get("ALEPH_SERVER_PORT");
+  let url: string;
+  if (devPort) {
+    url = `${useTls ? "https" : "http"}://${hostname}:${devPort}${filename.slice(1)}?ssr&v=${
+      (version ?? depGraph.globalVersion).toString(36)
+    }`;
+  } else {
+    const root = appDir ? resolve(appDir) : (config?.baseUrl ? fromFileUrl(new URL(".", config.baseUrl)) : Deno.cwd());
+    url = `file://${join(root, filename)}${version ? "#" + version.toString(36) : ""}`;
+  }
+  return await import(url);
+}
 
 export async function fetchRouteData(
-  routes: Route[],
-  url: URL,
   req: Request,
   ctx: Record<string, unknown>,
+  router: Router,
   reqData: boolean,
 ): Promise<Response | void> {
-  const { pathname, host } = url;
-  if (routes.length > 0) {
+  const { pathname, host } = new URL(req.url);
+  if (router.routes.length > 0) {
     let pathnameInput = pathname;
     if (pathnameInput !== "/") {
       pathnameInput = util.trimSuffix(pathname, "/");
     }
     let matched: RouteMatch | null = null;
     // find the direct match
-    for (const [pattern, meta] of routes) {
+    for (const [pattern, meta] of router.routes) {
       const ret = pattern.exec({ host, pathname: pathnameInput });
       if (ret) {
         matched = [ret, meta];
@@ -33,7 +53,7 @@ export async function fetchRouteData(
     }
     if (!matched) {
       // find index route
-      for (const [pattern, meta] of routes) {
+      for (const [pattern, meta] of router.routes) {
         if (meta.pattern.pathname.endsWith("/index")) {
           const ret = pattern.exec({ host, pathname: pathnameInput + "/index" });
           if (ret) {
@@ -46,7 +66,7 @@ export async function fetchRouteData(
     if (matched) {
       const { method } = req;
       const [ret, meta] = matched;
-      const mod = await importRouteModule(meta);
+      const mod = await importRouteModule(meta, router.appDir);
       const dataConfig = util.isPlainObject(mod.data) ? mod.data : mod;
       if (method !== "GET" || mod.default === undefined || reqData) {
         Object.assign(ctx.params as Record<string, string>, ret.pathname.groups);
@@ -74,68 +94,14 @@ export async function fetchRouteData(
   }
 }
 
-/** revive a route module. */
-export function revive(filename: string, module: Record<string, unknown>) {
-  revivedModules.set(filename, module);
-}
-
-/** import the route module. */
-export async function importRouteModule({ filename, pattern }: RouteMeta, cwd = Deno.cwd()) {
-  const config: AlephConfig | undefined = Reflect.get(globalThis, "__ALEPH_CONFIG");
-  let mod: Record<string, unknown>;
-  if (revivedModules.has(filename)) {
-    mod = revivedModules.get(filename)!;
-  } else if (
-    Deno.env.get("ALEPH_ENV") !== "development" && (config?.routeModules && pattern.pathname in config.routeModules)
-  ) {
-    mod = config.routeModules[pattern.pathname];
-  } else {
-    const port = Deno.env.get("ALEPH_MODULES_PROXY_PORT");
-    if (port) {
-      const graph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_SERVER_DEP_GRAPH");
-      const version = graph?.get(filename)?.version ?? graph?.mark(filename, {}).version;
-      mod = await import(`http://localhost:${port}${filename.slice(1)}?v=${version ?? "0"}`);
-    } else {
-      const graph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_CLIENT_DEP_GRAPH");
-      const version = graph?.get(filename)?.version ?? graph?.mark(filename, {}).version;
-
-      console.log(`file://${join(cwd, filename)}${version ? "#" + version.toString(16) : ""}`);
-      mod = await import(`file://${join(cwd, filename)}${version ? "#" + version.toString(16) : ""}`);
-    }
-  }
-  return mod;
-}
-
-/* check if the filename is a route */
-export function isRouteFile(filename: string): boolean {
-  const routeConfig: RouteConfig | null | undefined = Reflect.get(globalThis, "__ALEPH_ROUTE_CONFIG");
-  const index = routeConfig?.routes.findIndex(([_, meta]) => meta.filename === filename);
-  if (index !== undefined && index !== -1) {
-    return true;
-  }
-  const config: AlephConfig | undefined = Reflect.get(globalThis, "__ALEPH_CONFIG");
-  if (config && config.routes) {
-    const reg = toRouteRegExp(config.routes);
-    return reg.test(filename);
-  }
-  return false;
-}
-
-type RouteRegExp = {
-  prefix: string;
-  test(filename: string): boolean;
-  exec(filename: string): URLPatternInput | null;
-};
-
-/** initialize routes from routes config */
-export async function initRoutes(config: string | RouteRegExp, appDir?: string, cwd?: string): Promise<RouteConfig> {
-  const reg = isRouteRegExp(config) ? config : toRouteRegExp(appDir ? "./" + join(appDir, config) : config);
-  const files = await getFiles(join(cwd ?? Deno.cwd(), reg.prefix));
+/** initialize router from routes config */
+export async function initRouter(options: RouterInit, appDir?: string): Promise<Router> {
+  const reg = toRouteRegExp(options);
+  const files = await getFiles(appDir ?? Deno.cwd());
   const routes: Route[] = [];
   let _app: Route | undefined = undefined;
   let _404: Route | undefined = undefined;
-  files.forEach((file) => {
-    const filename = reg.prefix + file.slice(1);
+  files.forEach((filename) => {
     const pattern = reg.exec(filename);
     if (pattern && pattern.pathname !== "/_export" && !pattern.pathname.endsWith("_test")) {
       const route: Route = [
@@ -166,17 +132,43 @@ export async function initRoutes(config: string | RouteRegExp, appDir?: string, 
   }
 
   log.debug(`${routes.length} routes found`);
-  return { routes, prefix: reg.prefix, _404, _app };
+  return {
+    appDir,
+    routes,
+    prefix: reg.prefix,
+    _404,
+    _app,
+  };
+}
+
+/* check if the filename is a route */
+export function isRouteModule(filename: string): boolean {
+  const router: Router | null | undefined = Reflect.get(globalThis, "__ALEPH_ROUTER");
+  const index = router?.routes?.findIndex(([_, meta]) => meta.filename === filename);
+  if (index !== undefined && index !== -1) {
+    return true;
+  }
+  const config = getAlephConfig();
+  if (config?.router) {
+    const reg = toRouteRegExp(config.router);
+    return reg.test(filename);
+  }
+  return false;
 }
 
 /** convert route config to `RouteRegExp` */
-export function toRouteRegExp(config: string): RouteRegExp {
-  const prefix = util.trimSuffix(util.splitBy(config, "*")[0], "/");
-  const reg = globToRegExp("./" + util.trimPrefix(config, "./"));
-
+export function toRouteRegExp(init: RouterInit): RouteRegExp {
+  const glob = util.isFilledString(init.glob)
+    ? init.glob
+    : `.${util.cleanPath(init.dir ?? "routes")}/**/*.{${
+      (init.exts ?? builtinModuleExts).map((s) => util.trimPrefix(s, ".")).join(",")
+    }}`;
+  if (!glob) throw new Error("invalid router options: `glob` is required");
+  const prefix = util.trimSuffix(util.splitBy(glob, "*")[0], "/");
+  const reg = globToRegExp("./" + util.trimPrefix(glob, "./"));
   return {
     prefix,
-    test: (s: string) => reg.test(s),
+    test: (s: string) => s !== prefix + "/_export.ts" && reg.test(s),
     exec: (filename: string): URLPatternInput | null => {
       if (reg.test(filename)) {
         const parts = util.splitPath(util.trimPrefix(filename, prefix)).map((part) => {
@@ -205,11 +197,6 @@ export function toRouteRegExp(config: string): RouteRegExp {
       return null;
     },
   };
-}
-
-// check if route is index route
-function isRouteRegExp(v: unknown): v is RouteRegExp {
-  return util.isPlainObject(v) && typeof v.test === "function" && typeof v.exec === "function";
 }
 
 /** get route order by pathname length */

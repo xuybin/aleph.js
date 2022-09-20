@@ -1,8 +1,8 @@
-import { App, createSSRApp } from "aleph/vue";
-import { serve } from "aleph/server";
-import { renderToString } from "vue/server-renderer";
+import { serve } from "aleph/vue-server";
+import routes from "./routes/_export.ts";
 
 serve({
-  routes: "./routes/**/*.{vue,ts}",
-  ssr: (ctx) => renderToString(createSSRApp(App, { ssrContext: ctx }), ctx),
+  baseUrl: import.meta.url,
+  router: { routes },
+  ssr: true,
 });

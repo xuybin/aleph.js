@@ -1,27 +1,35 @@
-import { basename, dirname, globToRegExp, join } from "https://deno.land/std@0.145.0/path/mod.ts";
-import { JSONC } from "https://deno.land/x/jsonc_parser@v0.0.1/src/jsonc.ts";
-import { createGenerator, type UnoGenerator } from "../lib/@unocss/core.ts";
-import { cacheFetch } from "./cache.ts";
-import { getContentType } from "../lib/media_type.ts";
-import log from "../lib/log.ts";
-import util from "../lib/util.ts";
+import util from "../shared/util.ts";
 import { isCanary, VERSION } from "../version.ts";
-import type { AlephConfig, ImportMap, JSXConfig, ModuleLoader } from "./types.ts";
+import { cacheFetch } from "./cache.ts";
+import { type TransformOptions, type UnoGenerator } from "./deps.ts";
+import { basename, createGenerator, dirname, fromFileUrl, join, JSONC } from "./deps.ts";
+import log from "./log.ts";
+import { getContentType } from "./media_type.ts";
+import type { AlephConfig, CookieOptions, ImportMap, JSXConfig } from "./types.ts";
 
+export const regJsxFile = /\.(jsx|tsx)$/;
 export const regFullVersion = /@\d+\.\d+\.\d+/;
 export const builtinModuleExts = ["tsx", "ts", "mts", "jsx", "js", "mjs"];
 
-/** Stores and returns the `fn` output in the `globalThis` object */
+/** Stores and returns the `fn` output in the `globalThis` object. */
 export async function globalIt<T>(name: string, fn: () => Promise<T>): Promise<T> {
   const v: T | undefined = Reflect.get(globalThis, name);
   if (v !== undefined) {
+    if (v instanceof Promise) {
+      const ret = await v;
+      Reflect.set(globalThis, name, ret);
+      return ret;
+    }
     return v;
   }
-  const ret = await fn();
+  const ret = fn();
   if (ret !== undefined) {
     Reflect.set(globalThis, name, ret);
   }
-  return ret;
+  return await ret.then((v) => {
+    Reflect.set(globalThis, name, v);
+    return v;
+  });
 }
 
 /** Stores and returns the `fn` output in the `globalThis` object synchronously. */
@@ -37,25 +45,33 @@ export function globalItSync<T>(name: string, fn: () => T): T {
   return ret;
 }
 
-/* Get Aleph.js package URI. */
+/** Get the module URI of Aleph.js */
+export function getAlephPkgUri(): string {
+  return globalItSync("__ALEPH_PKG_URI", () => {
+    const uriEnv = Deno.env.get("ALEPH_PKG_URI");
+    if (uriEnv) {
+      return uriEnv;
+    }
+    if (import.meta.url.startsWith("file://")) {
+      return "https://aleph";
+    }
+    return `https://deno.land/x/${isCanary ? "aleph_canary" : "aleph"}@${VERSION}`;
+  });
+}
+
+/** Get Aleph.js package URI. */
 export function getAlephConfig(): AlephConfig | undefined {
   return Reflect.get(globalThis, "__ALEPH_CONFIG");
 }
 
-/* Get the module URI of Aleph.js */
-export function getAlephPkgUri(): string {
-  return globalItSync("__ALEPH_PKG_URI", () => {
-    const uriFromEnv = Deno.env.get("ALEPH_PKG_URI");
-    if (uriFromEnv) {
-      return uriFromEnv;
-    }
-    const DEV_PORT = Deno.env.get("ALEPH_DEV_PORT");
-    if (DEV_PORT) {
-      return `http://localhost:${DEV_PORT}`;
-    }
-    const version = Deno.env.get("ALEPH_VERSION") || VERSION;
-    return `https://deno.land/x/${isCanary ? "aleph_canary" : "alephjs"}@${version}`;
-  });
+/** Get the import maps. */
+export async function getImportMap(appDir?: string): Promise<ImportMap> {
+  return await globalIt("__ALEPH_IMPORT_MAP", () => loadImportMap(appDir));
+}
+
+/** Get the jsx config. */
+export async function getJSXConfig(appDir?: string): Promise<JSXConfig> {
+  return await globalIt("__ALEPH_JSX_CONFIG", () => loadJSXConfig(appDir));
 }
 
 /** Get the UnoCSS generator, return `null` if the presets are empty. */
@@ -65,7 +81,7 @@ export function getUnoGenerator(): UnoGenerator | null {
     return null;
   }
   return globalItSync("__UNO_GENERATOR", () => {
-    if (config?.unocss?.presets) {
+    if (config?.unocss) {
       return createGenerator(config.unocss);
     }
     return null;
@@ -77,17 +93,7 @@ export function getDeploymentId(): string | undefined {
   return Deno.env.get("DENO_DEPLOYMENT_ID");
 }
 
-export type CookieOptions = {
-  expires?: number | Date;
-  maxAge?: number;
-  domain?: string;
-  path?: string;
-  httpOnly?: boolean;
-  secure?: boolean;
-  sameSite?: "lax" | "strict" | "none";
-};
-
-export function setCookieHeader(name: string, value: string, options?: CookieOptions): string {
+export function cookieHeader(name: string, value: string, options?: CookieOptions): string {
   const cookie = [`${name}=${value}`];
   if (options) {
     if (options.expires) {
@@ -159,7 +165,7 @@ export function fixResponse(res: Response, addtionHeaders: Headers, fixRedirect:
 }
 
 /**
- * fix remote url to local path.
+ * Fix remote url to local path.
  * e.g. `https://esm.sh/react@17.0.2?dev` -> `/-/esm.sh/react@17.0.2?dev`
  */
 export function toLocalPath(url: string): string {
@@ -182,7 +188,7 @@ export function toLocalPath(url: string): string {
 }
 
 /**
- * restore the remote url from local path.
+ * Restore the remote url from local path.
  * e.g. `/-/esm.sh/react@17.0.2` -> `https://esm.sh/react@17.0.2`
  */
 export function restoreUrl(pathname: string): string {
@@ -196,42 +202,12 @@ export function restoreUrl(pathname: string): string {
   return `${protocol}://${host}${port ? ":" + port : ""}/${rest.join("/")}`;
 }
 
-/** init loaders in `CLI` mode, or use prebuild loaders */
-export async function initModuleLoaders(importMap?: ImportMap): Promise<ModuleLoader[]> {
-  const loaders: ModuleLoader[] = [];
-  if (Deno.env.get("ALEPH_CLI")) {
-    const { imports, __filename } = importMap ?? await loadImportMap();
-    for (const key in imports) {
-      if (/^\*\.{?(\w+, ?)*\w+}?$/i.test(key)) {
-        let src = imports[key];
-        if (src.endsWith("!loader")) {
-          src = util.trimSuffix(src, "!loader");
-          if (src.startsWith("./") || src.startsWith("../")) {
-            src = "file://" + join(dirname(__filename), src);
-          }
-          let { default: loader } = await import(src);
-          if (typeof loader === "function") {
-            loader = new loader();
-          }
-          if (loader !== null && typeof loader === "object" && typeof loader.load === "function") {
-            const glob = "/**/" + key;
-            const reg = globToRegExp(glob);
-            const Loader = {
-              meta: { src, glob },
-              test: (pathname: string) => reg.test(pathname),
-              load: (specifier: string, content: string, env: Record<string, unknown>) =>
-                loader.load(specifier, content, env),
-            };
-            loaders.push(Loader);
-          }
-        }
-      }
-    }
-  }
-  return loaders;
+/** Check if the url is a npm package from esm.sh */
+export function isNpmPkg(url: string) {
+  return url.startsWith("https://esm.sh/") && !url.endsWith(".js") && !url.endsWith(".css");
 }
 
-/* check whether or not the given path exists as a directory. */
+/** Check whether or not the given path exists as a directory. */
 export async function existsDir(path: string): Promise<boolean> {
   try {
     const stat = await Deno.lstat(path);
@@ -244,7 +220,7 @@ export async function existsDir(path: string): Promise<boolean> {
   }
 }
 
-/* check whether or not the given path exists as regular file. */
+/** Check whether or not the given path exists as regular file. */
 export async function existsFile(path: string): Promise<boolean> {
   try {
     const stat = await Deno.lstat(path);
@@ -257,7 +233,7 @@ export async function existsFile(path: string): Promise<boolean> {
   }
 }
 
-/* find file in the directory */
+/** Find file in the `cwd` directory. */
 export async function findFile(filenames: string[], cwd = Deno.cwd()): Promise<string | undefined> {
   for (const filename of filenames) {
     const fullPath = join(cwd, filename);
@@ -265,10 +241,72 @@ export async function findFile(filenames: string[], cwd = Deno.cwd()): Promise<s
       return fullPath;
     }
   }
-  return void 0;
 }
 
-// get files in the directory
+/** Find config file in the `appDir` if exits, or find in current working directory. */
+async function findConfigFile(filenames: string[], appDir?: string): Promise<string | undefined> {
+  let denoConfigFile: string | undefined;
+  if (appDir) {
+    denoConfigFile = await findFile(filenames, appDir);
+  }
+  // find config file in current working directory
+  if (!denoConfigFile) {
+    denoConfigFile = await findFile(filenames);
+  }
+  return denoConfigFile;
+}
+
+/** Watch the directory and its subdirectories. */
+export async function watchFs(rootDir: string, listener: (kind: "create" | "remove" | "modify", path: string) => void) {
+  const timers = new Map();
+  const debounce = (id: string, callback: () => void, delay: number) => {
+    if (timers.has(id)) {
+      clearTimeout(timers.get(id)!);
+    }
+    timers.set(
+      id,
+      setTimeout(() => {
+        timers.delete(id);
+        callback();
+      }, delay),
+    );
+  };
+  const reIgnore = /[\/\\](\.git(hub)?|\.vscode|vendor|node_modules|dist|out(put)?|target)[\/\\]/;
+  const ignore = (path: string) => reIgnore.test(path) || path.endsWith(".DS_Store");
+  const allFiles = new Set<string>(
+    (await getFiles(rootDir)).map((name) => join(rootDir, name)).filter((path) => !ignore(path)),
+  );
+  for await (const { kind, paths } of Deno.watchFs(rootDir, { recursive: true })) {
+    if (kind !== "create" && kind !== "remove" && kind !== "modify") {
+      continue;
+    }
+    for (const path of paths) {
+      if (ignore(path)) {
+        continue;
+      }
+      debounce(kind + path, async () => {
+        try {
+          await Deno.lstat(path);
+          if (!allFiles.has(path)) {
+            allFiles.add(path);
+            listener("create", path);
+          } else {
+            listener("modify", path);
+          }
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) {
+            allFiles.delete(path);
+            listener("remove", path);
+          } else {
+            console.warn("watchFs:", error);
+          }
+        }
+      }, 100);
+    }
+  }
+}
+
+/** Get files in the directory. */
 export async function getFiles(
   dir: string,
   filter?: (filename: string) => boolean,
@@ -290,12 +328,24 @@ export async function getFiles(
   return list;
 }
 
-/* read source code from fs/cdn/cache */
-export async function readCode(specifier: string, target?: string): Promise<[code: string, contentType: string]> {
+/** Fetch source code from fs/cdn/cache. */
+export async function fetchCode(
+  specifier: string,
+  target?: TransformOptions["target"],
+): Promise<[code: string, contentType: string]> {
+  const config = getAlephConfig();
   if (util.isLikelyHttpURL(specifier)) {
     const url = new URL(specifier);
-    if (url.hostname === "esm.sh" && !url.searchParams.has("target")) {
-      url.searchParams.set("target", target ?? "esnext");
+    if (url.host === "aleph") {
+      return [
+        await Deno.readTextFile(fromFileUrl(new URL(".." + url.pathname, import.meta.url))),
+        getContentType(url.pathname),
+      ];
+    }
+    if (url.hostname === "esm.sh") {
+      if (target && !url.pathname.includes(`/${target}/`) && !url.searchParams.has("target")) {
+        url.searchParams.set("target", target);
+      }
     }
     const res = await cacheFetch(url.href);
     if (res.status >= 400) {
@@ -304,120 +354,75 @@ export async function readCode(specifier: string, target?: string): Promise<[cod
     return [await res.text(), res.headers.get("Content-Type") || getContentType(url.pathname)];
   }
 
-  specifier = util.splitBy(specifier, "?")[0];
-  return [await Deno.readTextFile(specifier), getContentType(specifier)];
+  const root = config?.baseUrl ? fromFileUrl(new URL(".", config.baseUrl)) : Deno.cwd();
+  return [await Deno.readTextFile(join(root, specifier)), getContentType(specifier)];
 }
 
 /** Load the JSX config base the given import maps and the existing deno config. */
-export async function loadJSXConfig(importMap: ImportMap): Promise<JSXConfig> {
+export async function loadJSXConfig(appDir?: string): Promise<JSXConfig> {
   const jsxConfig: JSXConfig = {};
-  const denoConfigFile = await findFile(["deno.jsonc", "deno.json", "tsconfig.json"]);
-
+  const denoConfigFile = await findConfigFile(["deno.jsonc", "deno.json", "tsconfig.json"], appDir);
   if (denoConfigFile) {
     try {
       const { compilerOptions } = await parseJSONFile(denoConfigFile);
-      const { jsx, jsxImportSource, jsxFactory } = (compilerOptions || {}) as Record<string, unknown>;
+      const { jsx, jsxFactory, jsxFragmentFactory, jsxImportSource } = (compilerOptions || {}) as Record<
+        string,
+        unknown
+      >;
       if (
         (jsx === undefined || jsx === "react-jsx" || jsx === "react-jsxdev") &&
         util.isFilledString(jsxImportSource)
       ) {
         jsxConfig.jsxImportSource = jsxImportSource;
-        jsxConfig.jsxRuntime = jsxImportSource.includes("preact") ? "preact" : "react";
-      } else if (jsx === undefined || jsx === "react") {
-        jsxConfig.jsxRuntime = jsxFactory === "h" ? "preact" : "react";
+      } else {
+        if (typeof jsxFactory === "string") {
+          jsxConfig.jsxPragma = jsxFactory;
+        }
+        if (typeof jsxFragmentFactory === "string") {
+          jsxConfig.jsxPragmaFrag = jsxFragmentFactory;
+        }
       }
+      log.debug(`deno config ${basename(denoConfigFile)} loaded`);
     } catch (error) {
       log.error(`Failed to parse ${basename(denoConfigFile)}: ${error.message}`);
     }
-  } else if (Deno.env.get("ALEPH_DEV_ROOT")) {
-    const jsonFile = join(Deno.env.get("ALEPH_DEV_ROOT")!, "deno.json");
-    const { compilerOptions } = await parseJSONFile(jsonFile);
-    const { jsx, jsxImportSource, jsxFactory } = (compilerOptions || {}) as Record<string, unknown>;
-    if (
-      (jsx === undefined || jsx === "react-jsx" || jsx === "react-jsxdev") &&
-      util.isFilledString(jsxImportSource)
-    ) {
-      jsxConfig.jsxImportSource = jsxImportSource;
-      jsxConfig.jsxRuntime = jsxImportSource.includes("preact") ? "preact" : "react";
-    } else if (jsx === undefined || jsx === "react") {
-      jsxConfig.jsxRuntime = jsxFactory === "h" ? "preact" : "react";
-    }
   }
-
-  let fuzzRuntimeUrl: string | null = null;
-
-  for (const url of Object.values(importMap.imports)) {
-    let m = url.match(/^https?:\/\/esm\.sh\/(p?react)@(\d+\.\d+\.\d+(-[a-z\d.]+)*)(\?|$)/);
-    if (!m) {
-      m = url.match(/^https?:\/\/esm\.sh\/(p?react)@.+/);
-    }
-    if (m) {
-      const { searchParams } = new URL(url);
-      if (searchParams.has("pin")) {
-        jsxConfig.jsxRuntimeCdnVersion = util.trimPrefix(searchParams.get("pin")!, "v");
-      }
-      if (!jsxConfig.jsxRuntime) {
-        jsxConfig.jsxRuntime = m[1] as "react" | "preact";
-      }
-      if (m[2]) {
-        jsxConfig.jsxRuntimeVersion = m[2];
-        if (jsxConfig.jsxImportSource) {
-          jsxConfig.jsxImportSource = `https://esm.sh/${jsxConfig.jsxRuntime}@${m[2]}`;
-        }
-      } else {
-        fuzzRuntimeUrl = url;
-      }
-      break;
-    }
-  }
-
-  // get acctual react version from esm.sh
-  if (fuzzRuntimeUrl) {
-    log.info(`Checking ${jsxConfig.jsxRuntime} version...`);
-    const text = await fetch(fuzzRuntimeUrl).then((resp) => resp.text());
-    const m = text.match(/https?:\/\/cdn\.esm\.sh\/(v\d+)\/p?react@(\d+\.\d+\.\d+(-[a-z\d.]+)*)\//);
-    if (m) {
-      jsxConfig.jsxRuntimeCdnVersion = m[1].slice(1);
-      jsxConfig.jsxRuntimeVersion = m[2];
-      if (jsxConfig.jsxImportSource) {
-        jsxConfig.jsxImportSource = `https://esm.sh/${jsxConfig.jsxRuntime}@${m[2]}`;
-      }
-      log.info(`${jsxConfig.jsxRuntime}@${jsxConfig.jsxRuntimeVersion} is used`);
-    }
-  }
-
   return jsxConfig;
 }
 
 /** Load the import maps from the json file. */
-export async function loadImportMap(): Promise<ImportMap> {
+export async function loadImportMap(appDir?: string): Promise<ImportMap> {
   const importMap: ImportMap = { __filename: "", imports: {}, scopes: {} };
-
-  if (Deno.env.get("ALEPH_DEV")) {
-    const alephPkgUri = Deno.env.get("ALEPH_PKG_URI") ?? `http://localhost:${Deno.env.get("ALEPH_DEV_PORT")}`;
-    const importMapFile = join(Deno.env.get("ALEPH_DEV_ROOT")!, "import_map.json");
-    const { __filename, imports, scopes } = await parseImportMap(importMapFile);
-    Object.assign(importMap, {
-      __filename,
-      imports: {
-        ...imports,
-        "@unocss/": `${alephPkgUri}/lib/@unocss/`,
-        "aleph/": `${alephPkgUri}/`,
-        "aleph/server": `${alephPkgUri}/server/mod.ts`,
-        "aleph/react": `${alephPkgUri}/framework/react/mod.ts`,
-        "aleph/vue": `${alephPkgUri}/framework/vue/mod.ts`,
-      },
-      scopes,
-    });
+  let importMapFile: string | undefined;
+  const denoConfigFile = await findConfigFile(["deno.jsonc", "deno.json"], appDir);
+  if (denoConfigFile) {
+    const { importMap } = await parseJSONFile(denoConfigFile);
+    importMapFile = importMap ? join(dirname(denoConfigFile), importMap) : undefined;
   }
-
-  const importMapFile = await findFile(["import_map", "import-map", "importmap", "importMap"].map((v) => `${v}.json`));
+  if (!importMapFile) {
+    importMapFile = await findConfigFile(
+      ["import_map", "import-map", "importmap", "importMap"].map((v) => `${v}.json`),
+      appDir,
+    );
+  }
   if (importMapFile) {
     try {
       const { __filename, imports, scopes } = await parseImportMap(importMapFile);
+      if (import.meta.url.startsWith("file://") && appDir) {
+        const alephPkgUri = getAlephPkgUri();
+        if (alephPkgUri === "https://aleph") {
+          Object.assign(imports, {
+            "aleph/": "https://aleph/",
+            "aleph/react": "https://aleph/runtime/react/mod.ts",
+            "aleph/react-client": "https://aleph/runtime/react/client.ts",
+            "aleph/vue": "https://aleph/runtime/vue/mod.ts",
+          });
+        }
+      }
       Object.assign(importMap, { __filename });
       Object.assign(importMap.imports, imports);
       Object.assign(importMap.scopes, scopes);
+      log.debug(`import maps ${basename(importMapFile)} loaded`);
     } catch (e) {
       log.error("loadImportMap:", e.message);
     }
@@ -426,7 +431,8 @@ export async function loadImportMap(): Promise<ImportMap> {
   return importMap;
 }
 
-export async function parseJSONFile(jsonFile: string): Promise<Record<string, unknown>> {
+// deno-lint-ignore no-explicit-any
+export async function parseJSONFile(jsonFile: string): Promise<Record<string, any>> {
   const raw = await Deno.readTextFile(jsonFile);
   if (jsonFile.endsWith(".jsonc")) {
     return JSONC.parse(raw);
@@ -470,4 +476,46 @@ function toStringMap(v: unknown): Record<string, string> {
     });
   }
   return m;
+}
+
+/** A `MagicString` alternative using byte offsets */
+export class MagicString {
+  enc: TextEncoder;
+  dec: TextDecoder;
+  chunks: [number, Uint8Array][];
+
+  constructor(source: string) {
+    this.enc = new TextEncoder();
+    this.dec = new TextDecoder();
+    this.chunks = [[0, this.enc.encode(source)]];
+  }
+
+  overwrite(start: number, end: number, content: string) {
+    for (let i = 0; i < this.chunks.length; i++) {
+      const [offset, bytes] = this.chunks[i];
+      if (offset !== -1 && start >= offset && end <= offset + bytes.length) {
+        const left = bytes.subarray(0, start - offset);
+        const right = bytes.subarray(end - offset);
+        const insert = this.enc.encode(content);
+        this.chunks.splice(i, 1, [offset, left], [-1, insert], [end, right]);
+        return;
+      }
+    }
+    throw new Error(`overwrite: invalid range: ${start}-${end}`);
+  }
+
+  toBytes(): Uint8Array {
+    const length = this.chunks.reduce((sum, [, chunk]) => sum + chunk.length, 0);
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const [, chunk] of this.chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+    return bytes;
+  }
+
+  toString() {
+    return this.dec.decode(this.toBytes());
+  }
 }

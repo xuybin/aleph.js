@@ -1,13 +1,8 @@
 <script lang="ts">
-import Header from "../components/Header.vue";
 import { defineComponent, h } from "vue";
+import Header from "../components/Header.vue";
 
 export default defineComponent({
-  setup() {
-    return {
-      Header
-    }
-  },
   render() {
     return [
       h(Header),

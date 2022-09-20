@@ -1,7 +1,7 @@
-import { join } from "https://deno.land/std@0.145.0/path/mod.ts";
-import log from "../lib/log.ts";
-import util from "../lib/util.ts";
+import util from "../shared/util.ts";
+import { green, join } from "./deps.ts";
 import { existsDir, existsFile } from "./helpers.ts";
+import log from "./log.ts";
 
 type CacheMeta = {
   url: string;
@@ -15,19 +15,40 @@ type CacheMeta = {
 const memoryCache = new Map<string, [content: Uint8Array, meta: CacheMeta]>();
 const reloaded = new Set<string>();
 
+if (typeof Deno.run === "function") {
+  const p = Deno.run({
+    cmd: [Deno.execPath(), "info", "--json"],
+    stdout: "piped",
+    stderr: "null",
+  });
+  const output = util.utf8TextDecoder.decode(await p.output());
+  const { modulesCache } = JSON.parse(output);
+  if (util.isFilledString(modulesCache)) {
+    Deno.env.set("MODULES_CACHE_DIR", modulesCache);
+  }
+  p.close();
+}
+
 /** fetch and cache remote contents */
 export async function cacheFetch(
   url: string,
   options?: { forceRefresh?: boolean; retryTimes?: number; userAgent?: string },
 ): Promise<Response> {
-  const { protocol, hostname, port, pathname, search } = new URL(url);
+  const urlObj = new URL(url);
+  const { protocol, hostname, port, pathname, searchParams } = urlObj;
   const isLocalhost = ["localhost", "0.0.0.0", "127.0.0.1"].includes(hostname);
   const modulesCacheDir = Deno.env.get("MODULES_CACHE_DIR");
-  const cacheKey = isLocalhost ? "" : await util.computeHash("sha-256", pathname + search + (options?.userAgent || ""));
 
+  let cacheKey = "";
   let cacheDir = "";
   let metaFilepath = "";
   let contentFilepath = "";
+  if (!isLocalhost) {
+    searchParams.delete("v");
+    searchParams.sort();
+    url = urlObj.toString();
+    cacheKey = await util.computeHash("sha-256", pathname + searchParams.toString() + (options?.userAgent || ""));
+  }
   if (modulesCacheDir) {
     cacheDir = join(modulesCacheDir, util.trimSuffix(protocol, ":"), hostname + (port ? "_PORT" + port : ""));
     contentFilepath = join(cacheDir, cacheKey);
@@ -68,7 +89,7 @@ export async function cacheFetch(
   for (let i = 0; i < retryTimes; i++) {
     if (i === 0) {
       if (!isLocalhost) {
-        log.debug("Download", url);
+        log.debug(green("Download"), url);
       }
     } else {
       log.warn(`Download ${url} failed, retrying...`);

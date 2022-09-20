@@ -1,196 +1,146 @@
-import { join } from "https://deno.land/std@0.145.0/path/mod.ts";
-import { FetchError } from "../framework/core/error.ts";
-import type { RouteConfig, RouteModule } from "../framework/core/route.ts";
-import { matchRoutes } from "../framework/core/route.ts";
-import util from "../lib/util.ts";
-import type { DependencyGraph, Module } from "./graph.ts";
-import { getDeploymentId, getFiles, getUnoGenerator } from "./helpers.ts";
-import type { Element, HTMLRewriterHandlers } from "./html.ts";
-import { HTMLRewriter } from "./html.ts";
+import { FetchError } from "../runtime/core/error.ts";
+import { matchRoutes } from "../runtime/core/route.ts";
+import util from "../shared/util.ts";
+import { fromFileUrl, HTMLRewriter, join } from "./deps.ts";
+import depGraph from "./graph.ts";
+import { getAlephConfig, getDeploymentId, getFiles, getUnoGenerator, regJsxFile } from "./helpers.ts";
+import log from "./log.ts";
 import { importRouteModule } from "./routing.ts";
-import type { AlephConfig } from "./types.ts";
-
-export type SSRContext = {
-  readonly url: URL;
-  readonly routeModules: RouteModule[];
-  readonly headCollection: string[];
-  readonly dataDefer: boolean;
-  readonly signal: AbortSignal;
-  readonly bootstrapScripts?: string[];
-  readonly onError?: (error: unknown) => void;
-};
-
-export type SSRFn = {
-  (ssr: SSRContext): Promise<ReadableStream | string> | ReadableStream | string;
-};
-
-// Options for the content-security-policy
-// https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy
-export type CSP = {
-  getPolicy: (url: URL, nonce?: string) => string | null;
-  nonce?: boolean;
-};
-
-export type SSR = {
-  cacheControl?: "private" | "public";
-  CSP?: CSP;
-  dataDefer: true;
-  render: (ssr: SSRContext) => Promise<ReadableStream> | ReadableStream;
-} | {
-  cacheControl?: "private" | "public";
-  CSP?: CSP;
-  dataDefer?: false;
-  render: SSRFn;
-} | SSRFn;
-
-export type SSRResult = {
-  context: SSRContext;
-  body: ReadableStream | string;
-  deferedData: Record<string, unknown>;
-  nonce?: string;
-  is404?: boolean;
-};
+import type { Element, HTMLRewriterHandlers, RouteModule, Router, SSR, SSRContext, SSRResult } from "./types.ts";
 
 export type RenderOptions = {
   indexHtml: Uint8Array;
-  routeConfig: RouteConfig | null;
   customHTMLRewriter: [selector: string, handlers: HTMLRewriterHandlers][];
+  router: Router | null;
+  ssr: SSR;
   isDev?: boolean;
-  ssr?: SSR;
 };
 
-/** The virtual `bootstrapScript` to mark the ssr streaming initial UI is ready */
-const bootstrapScript = `data:text/javascript;charset=utf-8;base64,${btoa("/* stage ready */")}`;
+const runtimeScript = [
+  `let e=fn=>new Error('module "'+fn+'" not found');`,
+  `const getRouteModule=(fn)=>{`,
+  `if(map.has(fn)){`,
+  `let m=map.get(fn);`,
+  `if(m instanceof Promise) throw e(fn);`,
+  `return m;`,
+  `}`,
+  `throw e(fn);`,
+  `};`,
+  `const importRouteModule=async(fn)=>{`,
+  `if(map.has(fn)){`,
+  `let m=map.get(fn);`,
+  `if(m instanceof Promise) {`,
+  `m=await m;`,
+  `map.set(fn,m);`,
+  `}`,
+  `return m;`,
+  `}`,
+  `let v=document.body.getAttribute("data-build-id");`,
+  `let m=import(fn.slice(1)+(v?"?v="+v:""));`,
+  `map.set(fn,m);`,
+  `return await m.then(m=>{map.set(fn,m);return m;});`,
+  `};`,
+  `window.__aleph={getRouteModule,importRouteModule};`,
+].join("");
 
 export default {
   async fetch(req: Request, ctx: Record<string, unknown>, options: RenderOptions): Promise<Response> {
-    const { indexHtml, routeConfig, customHTMLRewriter, isDev, ssr } = options;
+    const { indexHtml, router, customHTMLRewriter, ssr, isDev } = options;
     const headers = new Headers(ctx.headers as Headers);
-    let ssrRes: SSRResult | null = null;
-    if (typeof ssr === "function" || typeof ssr?.render === "function") {
-      const isFn = typeof ssr === "function";
-      const dataDefer = isFn ? false : !!ssr.dataDefer;
-      const cc = !isFn ? ssr.cacheControl : "public";
-      const CSP = isFn ? undefined : ssr.CSP;
-      const render = isFn ? ssr : ssr.render;
-      const [url, routeModules, deferedData] = await initSSR(req, ctx, routeConfig, dataDefer);
-      const headCollection: string[] = [];
-      const ssrContext: SSRContext = {
-        url,
-        routeModules,
-        headCollection,
-        dataDefer,
-        signal: req.signal,
-        bootstrapScripts: [bootstrapScript],
-        onError: (_error: unknown) => {
-          // todo: handle suspense ssr error
-        },
-      };
+    const isFn = typeof ssr === "function";
+    const cc = !isFn ? ssr.cacheControl : "public";
+    const CSP = isFn ? undefined : ssr.CSP;
+    const render = isFn ? ssr : ssr.render;
+    const [url, routeModules, deferedData] = await initSSR(req, ctx, router);
+    const headCollection: string[] = [];
+    const ssrContext: SSRContext = {
+      url,
+      routeModules,
+      headCollection,
+      signal: req.signal,
+      nonce: CSP?.nonce ? Date.now().toString(36) : undefined,
+    };
 
-      let body = await render(ssrContext);
-      if (typeof body !== "string" && !(body instanceof ReadableStream)) {
-        body = "";
+    let body = render(ssrContext);
+    if (body instanceof Promise) {
+      body = await body;
+    }
+    if (typeof body !== "string" && !(body instanceof ReadableStream)) {
+      body = "";
+    }
+
+    // find inline css
+    depGraph.shallowWalk(routeModules.map(({ filename }) => filename), (mod) => {
+      const { specifier, inlineCSS } = mod;
+      if (inlineCSS) {
+        headCollection.push(`<style data-module-id="${specifier}" ssr>${inlineCSS}</style>`);
       }
+    });
 
-      // find inline css
-      const serverDependencyGraph: DependencyGraph | undefined = Reflect.get(globalThis, "__ALEPH_SERVER_DEP_GRAPH");
-      if (serverDependencyGraph) {
-        const lookupModuleStyle = (mod: Module) => {
-          const { specifier, inlineCSS } = mod;
-          if (inlineCSS) {
-            headCollection.push(`<style data-module-id="${specifier}">${inlineCSS}</style>`);
-          }
-        };
-        for (const { filename } of routeModules) {
-          serverDependencyGraph.shallowWalk(filename, lookupModuleStyle);
-        }
-      }
-
-      // build unocss
-      const config: AlephConfig | undefined = Reflect.get(globalThis, "__ALEPH_CONFIG");
-      if (config?.unocss?.presets) {
-        const test: RegExp = config.unocss.test ?? /\.(jsx|tsx)$/;
-        const dir = config?.appDir ? join(Deno.cwd(), config.appDir) : Deno.cwd();
-        const files = await getFiles(dir);
-        const inputSources = await Promise.all(
-          files.filter((name) => test.test(name)).map((name) => Deno.readTextFile(join(dir, name))),
-        );
-        const unoGenerator = getUnoGenerator();
-        if (unoGenerator) {
-          const start = performance.now();
-          let css = Reflect.get(globalThis, "__ALEPH_GLOBAL_UNOCSS");
-          if (!css) {
+    // build unocss
+    const config = getAlephConfig();
+    if (config?.unocss?.presets) {
+      const unoGenerator = getUnoGenerator();
+      if (unoGenerator) {
+        const t = performance.now();
+        const {
+          test = regJsxFile,
+          resetCSS = "tailwind",
+        } = config.unocss;
+        let css = Reflect.get(globalThis, "__ALEPH_UNOCSS_BUILD");
+        if (!css) {
+          const dir = config?.baseUrl ? fromFileUrl(new URL(".", config.baseUrl)) : Deno.cwd();
+          const files = await getFiles(dir);
+          const outputDir = "." + util.cleanPath(config.optimization?.outputDir ?? "./output");
+          const inputSources = await Promise.all(
+            files.filter((name) => test.test(name) && !name.startsWith(outputDir)).map((name) =>
+              Deno.readTextFile(join(dir, name))
+            ),
+          );
+          if (inputSources.length > 0) {
             const ret = await unoGenerator.generate(inputSources.join("\n"), {
               minify: !isDev,
             });
-            css = ret.css;
-            if (!isDev) {
-              Reflect.set(globalThis, "__ALEPH_GLOBAL_UNOCSS", css);
+            if (ret.matched.size > 0) {
+              css = ret.css;
+              if (!isDev) {
+                Reflect.set(globalThis, "__ALEPH_UNOCSS_BUILD", css);
+              }
             }
           }
-          if (css) {
-            const buildTime = performance.now() - start;
-            headCollection.push(
-              `<link rel="stylesheet" href="/-/esm.sh/@unocss/reset@0.41.1/tailwind.css">`,
-              `<style data-unocss="${unoGenerator.version}" data-build-time="${buildTime}ms">${css}</style>`,
-            );
-          }
+        }
+        if (css) {
+          const buildTime = (performance.now() - t).toFixed(2);
+          headCollection.push(
+            `<link rel="stylesheet" href="/-/esm.sh/@unocss/reset@0.45.14/${resetCSS}.css">`,
+            `<style data-unocss="${unoGenerator.version}" data-build-time="${buildTime}ms">${css}</style>`,
+          );
+          log.debug(`Uncss generated in ${buildTime}ms`);
         }
       }
+    }
 
-      if (routeModules.every(({ dataCacheTtl: ttl }) => typeof ttl === "number" && !Number.isNaN(ttl) && ttl > 0)) {
-        const ttls = routeModules.map(({ dataCacheTtl }) => Number(dataCacheTtl));
-        headers.append("Cache-Control", `${cc}, max-age=${Math.min(...ttls)}`);
-      } else {
-        headers.append("Cache-Control", `${cc}, max-age=0, must-revalidate`);
-      }
-      ssrRes = {
-        context: ssrContext,
-        body,
-        deferedData,
-        is404: routeConfig !== null && (routeModules.length === 0 || routeModules.at(-1)?.url.pathname ===
-            "/_404"),
-      };
-      if (!isDev && CSP) {
-        const nonce = CSP.nonce ? Date.now().toString(36) : undefined;
-        const policy = CSP.getPolicy(url, nonce!);
-        if (policy) {
-          headers.append("Content-Security-Policy", policy);
-          if (policy.includes("nonce-" + nonce)) {
-            ssrRes.nonce = nonce;
-          }
+    const ssrRes: SSRResult = {
+      body,
+      context: ssrContext,
+      deferedData,
+    };
+
+    if (!isDev && CSP) {
+      const nonce = ssrContext.nonce;
+      const policy = CSP.getPolicy(url, nonce);
+      if (policy) {
+        headers.append("Content-Security-Policy", policy);
+        if (nonce && policy.includes("nonce-" + nonce)) {
+          ssrRes.nonce = nonce;
         }
       }
-    } else {
-      const deployId = getDeploymentId();
-      let etag: string | null = null;
-      if (deployId) {
-        etag = `W/${btoa("./index.html").replace(/[^a-z0-9]/g, "")}-${deployId}`;
-      } else {
-        try {
-          const { mtime, size } = await Deno.lstat("./index.html");
-          if (mtime) {
-            etag = `W/${mtime.getTime().toString(16)}-${size.toString(16)}`;
-            headers.append("Last-Modified", new Date(mtime).toUTCString());
-          }
-        } catch (err) {
-          if (!(err instanceof Deno.errors.NotFound)) {
-            throw err;
-          }
-        }
-      }
-      if (etag) {
-        if (req.headers.get("If-None-Match") === etag) {
-          return new Response(null, { status: 304 });
-        }
-        headers.append("ETag", etag);
-      }
-      headers.append("Cache-Control", "public, max-age=0, must-revalidate");
     }
 
     const stream = new ReadableStream({
       start: (controller) => {
         let ssrStreaming = false;
+
         const suspenseChunks: Uint8Array[] = [];
         const rewriter = new HTMLRewriter("utf8", (chunk: Uint8Array) => {
           if (ssrStreaming) {
@@ -206,131 +156,132 @@ export default {
         // inject the roures manifest
         rewriter.on("head", {
           element(el: Element) {
-            if (routeConfig && routeConfig.routes.length > 0) {
+            if (router && router.routes.length > 0) {
               const json = JSON.stringify({
-                routes: routeConfig.routes.map(([_, meta]) => meta),
-                prefix: routeConfig.prefix,
+                routes: router.routes.map(([_, meta]) => meta),
+                prefix: router.prefix,
               });
-              el.append(`<script id="routes-manifest" type="application/json">${json}</script>`, {
+              el.append(`<script id="router-manifest" type="application/json">${json}</script>`, {
                 html: true,
               });
             }
           },
         });
 
-        if (ssrRes) {
-          const {
-            context: { routeModules, headCollection },
-            body,
-            deferedData,
-            nonce,
-          } = ssrRes;
-          rewriter.on("head", {
-            element(el: Element) {
-              headCollection.forEach((h) => util.isFilledString(h) && el.append(h, { html: true }));
-              if (routeModules.length > 0) {
-                const ssrModules = routeModules.map(({ url, params, filename, withData, data, dataCacheTtl }) => {
-                  const defered = typeof data === "function" ? true : undefined;
-                  return {
-                    url: url.pathname + url.search,
-                    params,
-                    filename,
-                    withData,
-                    error: data instanceof Error ? { message: data.message, stack: data.stack } : undefined,
-                    data: defered ? undefined : data instanceof Error ? undefined : data,
-                    dataCacheTtl,
-                    dataDefered: defered,
-                  };
-                });
+        const { context, body, deferedData, nonce } = ssrRes;
+        const { routeModules, headCollection } = context;
 
-                // replace "/" to "\/" to prevent xss
-                const modulesJSON = JSON.stringify(ssrModules).replaceAll("/", "\\/");
-                el.append(
-                  `<script id="ssr-modules" type="application/json">${modulesJSON}</script>`,
-                  { html: true },
-                );
+        rewriter.on("head", {
+          element(el: Element) {
+            headCollection.forEach((h) => util.isFilledString(h) && el.append(h, { html: true }));
+            if (routeModules.length > 0) {
+              const ssrModules = routeModules.map(({ url, params, filename, withData, data, dataCacheTtl }) => {
+                const defered = typeof data === "function" ? true : undefined;
+                return {
+                  url: url.pathname + url.search,
+                  params,
+                  filename,
+                  withData,
+                  dataCacheTtl,
+                  data: defered ? undefined : data instanceof Error ? undefined : data,
+                  dataDefered: defered,
+                  error: data instanceof Error ? { message: data.message, stack: data.stack } : undefined,
+                };
+              });
 
-                const deployId = getDeploymentId();
-                const importStmts = routeModules.map(({ filename }, idx) =>
-                  `import $${idx} from ${JSON.stringify(filename.slice(1) + (deployId ? `?v=${deployId}` : ""))} ;`
-                ).join("");
-                const kvs = routeModules.map(({ filename, data }, idx) =>
-                  `${JSON.stringify(filename)}:{defaultExport:$${idx}${data !== undefined ? ",withData:true" : ""}}`
-                ).join(",");
-                const nonceAttr = nonce ? ` nonce="${nonce}"` : "";
-                el.append(
-                  `<script type="module"${nonceAttr}>${importStmts}window.__ROUTE_MODULES={${kvs}};</script>`,
-                  { html: true },
-                );
-              }
-            },
-          });
-          rewriter.on("ssr-body", {
-            element(el: Element) {
-              if (typeof body === "string") {
-                el.replace(body, { html: true });
-              } else if (body instanceof ReadableStream) {
-                el.remove();
-                ssrStreaming = true;
+              // replace "/" to "\/" to prevent xss
+              const modulesJSON = JSON.stringify(ssrModules).replaceAll("/", "\\/");
+              el.append(
+                `<script id="ssr-data" type="application/json">${modulesJSON}</script>`,
+                { html: true },
+              );
 
-                const rw = new HTMLRewriter("utf8", (chunk: Uint8Array) => {
-                  controller.enqueue(chunk);
-                });
-                rw.on("script", {
+              const deployId = getDeploymentId() ?? depGraph.globalVersion.toString(36);
+              const importStmts = routeModules.map(({ filename }, idx) =>
+                `import * as $${idx} from ${JSON.stringify(filename.slice(1) + (deployId ? `?v=${deployId}` : ""))};`
+              ).join("");
+              const kvs = routeModules.map(({ filename }, idx) => `${JSON.stringify(filename)}:$${idx}`).join(
+                ",",
+              );
+              const nonceAttr = nonce ? ` nonce="${nonce}"` : "";
+              el.append(
+                `<script type="module"${nonceAttr}>${importStmts}let map=new Map(Object.entries({${kvs}}));${runtimeScript}</script>`,
+                { html: true },
+              );
+            }
+          },
+        });
+
+        rewriter.on("ssr-body", {
+          element(el: Element) {
+            if (typeof body === "string") {
+              el.replace(body, { html: true });
+            } else if (body instanceof ReadableStream) {
+              ssrStreaming = true;
+              el.remove();
+
+              const rw = new HTMLRewriter("utf8", (chunk: Uint8Array) => {
+                controller.enqueue(chunk);
+              });
+
+              if (ssrContext.suspenseMark) {
+                const { selector, test } = ssrContext.suspenseMark;
+                rw.on(selector, {
                   element(el: Element) {
-                    if (el.getAttribute("src") === bootstrapScript) {
+                    if (test(el)) {
                       suspenseChunks.splice(0, suspenseChunks.length).forEach((chunk) => controller.enqueue(chunk));
-                      el.remove();
                     }
                   },
                 });
-                const send = async () => {
-                  try {
-                    const reader = body.getReader();
-                    while (true) {
-                      const { done, value } = await reader.read();
-                      if (done) {
-                        break;
-                      }
-                      rw.write(value);
+              }
+
+              const send = async () => {
+                try {
+                  const reader = body.getReader();
+                  while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) {
+                      break;
                     }
-                    rw.end();
-                    if (suspenseChunks.length > 0) {
-                      suspenseChunks.forEach((chunk) => controller.enqueue(chunk));
-                    }
-                    if (Object.keys(deferedData).length > 0) {
-                      controller.enqueue(
-                        util.utf8TextEncoder.encode(
-                          `<script type="application/json" id="defered-data">${JSON.stringify(deferedData)}</script>`,
-                        ),
-                      );
-                    }
-                  } finally {
-                    controller.close();
-                    rw.free();
+                    rw.write(value);
                   }
-                };
-                send();
+                  rw.end();
+                  if (suspenseChunks.length > 0) {
+                    suspenseChunks.forEach((chunk) => controller.enqueue(chunk));
+                  }
+                  if (Object.keys(deferedData).length > 0) {
+                    controller.enqueue(
+                      util.utf8TextEncoder.encode(
+                        `<script type="application/json" id="defered-data">${JSON.stringify(deferedData)}</script>`,
+                      ),
+                    );
+                  }
+                } finally {
+                  controller.close();
+                  rw.free();
+                }
+              };
+              send();
+            }
+          },
+        });
+
+        if (nonce) {
+          rewriter.on("script", {
+            element(el: Element) {
+              const typeAttr = el.getAttribute("type");
+              if ((!typeAttr || typeAttr === "module") && !el.getAttribute("src")) {
+                el.setAttribute("nonce", nonce);
               }
             },
           });
-          if (nonce) {
-            rewriter.on("script", {
-              element(el: Element) {
-                const typeAttr = el.getAttribute("type");
-                if ((!typeAttr || typeAttr === "module") && !el.getAttribute("src")) {
-                  el.setAttribute("nonce", nonce);
-                }
-              },
-            });
-          }
         }
 
         try {
           rewriter.write(indexHtml);
           rewriter.end();
         } finally {
-          if (!ssrRes || typeof ssrRes.body === "string") {
+          if (!ssrStreaming) {
             controller.close();
           }
           rewriter.free();
@@ -338,8 +289,15 @@ export default {
       },
     });
 
+    if (routeModules.every(({ dataCacheTtl: ttl }) => typeof ttl === "number" && !Number.isNaN(ttl) && ttl > 0)) {
+      const ttls = routeModules.map(({ dataCacheTtl }) => Number(dataCacheTtl));
+      headers.append("Cache-Control", `${cc}, max-age=${Math.min(...ttls)}`);
+    } else {
+      headers.append("Cache-Control", `${cc}, max-age=0, must-revalidate`);
+    }
     headers.set("Content-Type", "text/html; charset=utf-8");
-    return new Response(stream, { headers, status: ssrRes?.is404 ? 404 : 200 });
+
+    return new Response(stream, { headers, status: ssrContext.status });
   },
 };
 
@@ -347,30 +305,30 @@ export default {
 async function initSSR(
   req: Request,
   ctx: Record<string, unknown>,
-  routeConfig: RouteConfig | null,
-  dataDefer: boolean,
+  router: Router | null,
 ): Promise<[
   url: URL,
   routeModules: RouteModule[],
   deferedData: Record<string, unknown>,
 ]> {
   const url = new URL(req.url);
-  if (!routeConfig) {
+  if (!router) {
     return [url, [], {}];
   }
 
-  const matches = matchRoutes(url, routeConfig);
+  const matches = matchRoutes(url, router);
   const deferedData: Record<string, unknown> = {};
 
   // import module and fetch data for each matched route
   const modules = await Promise.all(matches.map(async ([ret, meta]) => {
-    const mod = await importRouteModule(meta);
+    const mod = await importRouteModule(meta, router.appDir);
     const dataConfig = util.isPlainObject(mod.data) ? mod.data : mod;
+    const dataDefer = Boolean(dataConfig?.defer);
     const rmod: RouteModule = {
       url: new URL(ret.pathname.input + url.search, url.href),
       params: ret.pathname.groups,
       filename: meta.filename,
-      defaultExport: mod.default,
+      exports: mod,
       dataCacheTtl: dataConfig?.cacheTtl as (number | undefined),
     };
 
@@ -443,7 +401,7 @@ async function initSSR(
 
   return [
     url,
-    modules.filter(({ defaultExport }) => defaultExport !== undefined),
+    modules.filter(({ exports }) => exports.default !== undefined),
     deferedData,
   ];
 }

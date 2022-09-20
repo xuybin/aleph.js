@@ -19,56 +19,45 @@ You will need [Deno](https://deno.land/) 1.20+.
 6. Make a [pull request](https://github.com/alephjs/aleph.js/pulls).
 7. Merge to master branch by our maintainers.
 
-### react-app
+### Run The Examples
 
 ```bash
-# run the example app in development mode
-deno task dev examples/react-app
+# Run the example app in development mode
+deno run -A examples/$APP/dev.ts
 
-# run the example app in production mode
-deno task start examples/react-app
+# Run the example app in production mode
+deno run -A examples/$APP/server.ts
 
-# build the example app into a worker for serverless platform
-deno task build examples/react-app
+# Optimize the application (bundling, ssg, etc.)
+deno run -A examples/$APP/server.ts
 ```
 
-### vue-app
-
-```bash
-# run the example app in development mode
-deno task dev examples/vue-app
-
-# run the example app in production mode
-deno task start examples/vue-app
-
-# build the example app into a worker for serverless platform
-deno task build examples/vue-app
-```
+**Examples**: https://github.com/alephjs/aleph.js/tree/main/examples
 
 ## Testing
 
-You can run all tests with the following command:
+You can run all the testings by the following command:
 
 ```bash
-deno task test -A
+deno test -A
 ```
 
 ## Project Structure
 
-- **/commands** commands of Aleph.js CLI
 - **/examples** examples to get started
-- **/framework**
-  - **core** framework core
-  - **react** framework in React
-  - **vue** framework in Vue.js
-- **/lib** shared lib
-- **/loaders** builtin loaders
-- **/server** server of Aleph.js
+- **/runtime**
+  - **core** framework runtime core
+  - **react** framework runtime for React
+  - **vue** framework runtime for Vue.js
+  - **solid** framework runtime for SolidJS
+- **/server** server core of Aleph.js
+- **/shared** shared libraries
+- **/tests** unit/integration testings
 
 ## Code Style We Followed
 
 - Double quote for string
-- Semicolons is good
+- Ends with semicolon
 - 2 spaces indent
 - Types everything
 - Order the imports

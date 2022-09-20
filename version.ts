@@ -1,5 +1,5 @@
 /** `VERSION` managed by https://deno.land/x/publish */
-export const VERSION = "1.0.0-alpha.78.1";
+export const VERSION = "1.0.0-beta.10";
 
 /** The flag indicates that the version is canary version. */
 export const isCanary = false;
@@ -11,8 +11,8 @@ export async function prepublish(version: string) {
   await Deno.writeTextFile(
     "./README.md",
     readme.replace(
-      /\/\/deno\.land\/x\/alephjs@[a-z\d\.\-]+\//,
-      `//deno.land/x/alephjs@${version}/`,
+      /\/\/deno\.land\/x\/aleph@[a-z\d\.\-]+\//,
+      `//deno.land/x/aleph@${version}/`,
     ),
   );
 }

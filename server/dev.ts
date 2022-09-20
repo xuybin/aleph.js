@@ -1,15 +1,176 @@
-import { join } from "https://deno.land/std@0.145.0/path/mod.ts";
-import { parseExportNames } from "https://deno.land/x/aleph_compiler@0.6.6/mod.ts";
-import type { RouteConfig } from "../framework/core/route.ts";
-import log, { blue } from "../lib/log.ts";
-import util from "../lib/util.ts";
-import { initRoutes, toRouteRegExp } from "./routing.ts";
-import { createFsEmitter, removeFsEmitter, watchFs } from "./watch_fs.ts";
-import type { AlephConfig } from "./types.ts";
+import util from "../shared/util.ts";
+import { BuildResult, dim, dirname, Emitter, ensureDir, parseDeps } from "./deps.ts";
+import { esbuild, fromFileUrl, join, mitt, relative } from "./deps.ts";
+import depGraph, { DependencyGraph } from "./graph.ts";
+import {
+  builtinModuleExts,
+  existsFile,
+  findFile,
+  getAlephConfig,
+  getImportMap,
+  getJSXConfig,
+  watchFs,
+} from "./helpers.ts";
+import log from "./log.ts";
+import { initRouter, toRouteRegExp } from "./routing.ts";
+import type { AlephConfig, ModuleLoader, Router } from "./types.ts";
 
-export function handleHMRSocket(req: Request): Response {
-  const { socket, response } = Deno.upgradeWebSocket(req, {});
-  const emitter = createFsEmitter();
+type WatchFsEvents = {
+  [key in "create" | "remove" | "modify" | `modify:${string}` | `hotUpdate:${string}`]: {
+    specifier: string;
+  };
+};
+
+const watchFsEmitters = new Set<Emitter<WatchFsEvents>>();
+
+/** Create a `watchFs` emitter. */
+export function createWatchFsEmitter() {
+  const e = mitt<WatchFsEvents>();
+  watchFsEmitters.add(e);
+  return e;
+}
+
+/** Remove the emitter. */
+export function removeWatchFsEmitter(e: Emitter<WatchFsEvents>) {
+  e.all.clear();
+  watchFsEmitters.delete(e);
+}
+
+/** Watch for file changes and listen the dev server. */
+export function watch(appDir = Deno.cwd()) {
+  const config = getAlephConfig();
+  const emitter = createWatchFsEmitter();
+
+  emitter.on("*", async (kind, { specifier }) => {
+    if (config?.router) {
+      if (kind === "create" || kind === "remove") {
+        // reload router when fs changess
+        const reg = toRouteRegExp(config.router);
+        if (reg.test(specifier)) {
+          const router = await initRouter(config.router, appDir);
+          Reflect.set(globalThis, "__ALEPH_ROUTER", router);
+          if (config.ssr) {
+            generateExportTs(appDir, router, config.loaders).catch((err) => log.error(err));
+          }
+        }
+      }
+    } else {
+      Reflect.set(globalThis, "__ALEPH_ROUTER", null);
+    }
+  });
+
+  if (config?.router) {
+    initRouter(config.router, appDir).then((router) => {
+      Reflect.set(globalThis, "__ALEPH_ROUTER", router);
+      generateExportTs(appDir, router, config.loaders).catch((err) => log.error(err));
+    });
+  } else {
+    Reflect.set(globalThis, "__ALEPH_ROUTER", null);
+  }
+
+  watchFs(appDir, (kind: "create" | "remove" | "modify", path: string) => {
+    const specifier = "./" + relative(appDir, path).replaceAll("\\", "/");
+    // delete global cached index html
+    if (specifier === "./index.html") {
+      Reflect.deleteProperty(globalThis, "__ALEPH_INDEX_HTML");
+    }
+    if (kind === "remove") {
+      depGraph.unmark(specifier);
+    } else {
+      depGraph.update(specifier);
+    }
+    if (kind === "modify") {
+      watchFsEmitters.forEach((e) => {
+        e.emit("modify", { specifier });
+        e.emit(`modify:${specifier}`, { specifier });
+        if (e.all.has(`hotUpdate:${specifier}`)) {
+          e.emit(`hotUpdate:${specifier}`, { specifier });
+        } else if (specifier !== "./routes/_export.ts") {
+          depGraph.lookup(specifier, (specifier) => {
+            if (e.all.has(`hotUpdate:${specifier}`)) {
+              e.emit(`hotUpdate:${specifier}`, { specifier });
+              return false;
+            }
+          });
+        }
+      });
+    } else {
+      watchFsEmitters.forEach((e) => e.emit(kind, { specifier }));
+    }
+  });
+}
+
+export type DevOptions = {
+  baseUrl?: string;
+  serverEntry?: string;
+};
+
+let devProcess: Deno.Process | null = null;
+let watched = false;
+
+export default async function dev(options?: DevOptions) {
+  // stop previous dev server
+  if (devProcess) {
+    devProcess.kill("SIGTERM");
+    devProcess.close();
+  }
+
+  const appDir = options?.baseUrl ? fromFileUrl(new URL(".", options.baseUrl)) : Deno.cwd();
+  const serverEntry = options?.serverEntry
+    ? join(appDir, options?.serverEntry)
+    : await findFile(builtinModuleExts.map((ext) => `server.${ext}`), appDir);
+  if (serverEntry) {
+    const serverSpecifier = `./${util.trimPrefix(serverEntry, appDir)}`;
+    const source = await Deno.readTextFile(serverEntry);
+    const importMap = await getImportMap();
+    const deps = await parseDeps(serverSpecifier, source, {
+      importMap: JSON.stringify(importMap),
+    });
+
+    // ensure the `_export.ts` file exists
+    for (const dep of deps) {
+      if (dep.specifier.startsWith("./") && dep.specifier.endsWith("/_export.ts")) {
+        const fp = join(appDir, dep.specifier);
+        await ensureDir(dirname(fp));
+        await Deno.writeTextFile(fp, "export default {}");
+      }
+    }
+
+    if (!watched) {
+      log.info("[dev] Watching for file changes...");
+      watch(appDir);
+      watched = true;
+    }
+
+    const emitter = createWatchFsEmitter();
+    emitter.on("*", (kind, { specifier }) => {
+      if (
+        kind === "modify" && (
+          specifier === serverSpecifier ||
+          deps.some((dep) => !dep.specifier.endsWith("/_export.ts") && dep.specifier === specifier)
+        )
+      ) {
+        dev(options);
+      }
+    });
+
+    const cmd = [Deno.execPath(), "run", "-A", "-q", serverEntry, "--dev"];
+    if (devProcess) {
+      console.debug(dim("[dev] Restarting the server..."));
+    }
+    devProcess = Deno.run({ cmd, stderr: "inherit", stdout: "inherit" });
+    await devProcess.status();
+    devProcess.close();
+    devProcess = null;
+    removeWatchFsEmitter(emitter);
+  } else {
+    log.fatal("[dev] No server entry found.");
+  }
+}
+
+export function handleHMR(req: Request): Response {
+  const { socket, response } = Deno.upgradeWebSocket(req);
+  const emitter = createWatchFsEmitter();
   const send = (message: Record<string, unknown>) => {
     try {
       socket.send(JSON.stringify(message));
@@ -17,11 +178,17 @@ export function handleHMRSocket(req: Request): Response {
       log.warn("socket.send:", err.message);
     }
   };
+  socket.addEventListener("close", () => {
+    removeWatchFsEmitter(emitter);
+  });
   socket.addEventListener("open", () => {
     emitter.on("create", ({ specifier }) => {
-      const config: AlephConfig | undefined = Reflect.get(globalThis, "__ALEPH_CONFIG");
-      if (config && config.routes) {
-        const reg = toRouteRegExp(config.routes);
+      const config: AlephConfig | undefined = Reflect.get(
+        globalThis,
+        "__ALEPH_CONFIG",
+      );
+      if (config?.router) {
+        const reg = toRouteRegExp(config.router);
         const routePattern = reg.exec(specifier);
         if (routePattern) {
           send({ type: "create", specifier, routePattern });
@@ -40,108 +207,25 @@ export function handleHMRSocket(req: Request): Response {
       try {
         const { type, specifier } = JSON.parse(e.data);
         if (type === "hotAccept" && util.isFilledString(specifier)) {
-          emitter.on(
-            `hotUpdate:${specifier}`,
-            () => send({ type: "modify", specifier }),
-          );
+          emitter.on(`hotUpdate:${specifier}`, () => {
+            send({ type: "modify", specifier });
+          });
         }
       } catch (_e) {
         log.error("invlid socket message:", e.data);
       }
     }
   });
-  socket.addEventListener("close", () => {
-    removeFsEmitter(emitter);
-  });
   return response;
 }
 
-export function watchFS(appDir?: string) {
-  const config: AlephConfig | undefined = Reflect.get(globalThis, "__ALEPH_CONFIG");
-  const emitter = createFsEmitter();
+/** generate the `routes/_export.ts` module by given the routes config. */
+export async function generateExportTs(appDir: string, router: Router, loaders?: ModuleLoader[]) {
+  const routesDir = join(appDir, router.prefix);
+  const genFile = join(routesDir, "_export.ts");
+  const withLoader = router.routes.some(([_, { filename }]) => loaders?.some((l) => l.test(filename)));
 
-  // update global route config when fs changess
-  const updateRoutes = async ({ specifier }: { specifier: string }) => {
-    if (config?.routes) {
-      const reg = toRouteRegExp(config.routes);
-      if (reg.test(specifier)) {
-        const routeConfig = await initRoutes(reg, appDir);
-        Reflect.set(globalThis, "__ALEPH_ROUTE_CONFIG", routeConfig);
-        if (!Deno.env.get("ALEPH_CLI")) {
-          generateRoutesModule(routeConfig).catch((error) => log.error(error));
-        }
-      }
-    } else {
-      Reflect.set(globalThis, "__ALEPH_ROUTE_CONFIG", null);
-    }
-  };
-  emitter.on("create", updateRoutes);
-  emitter.on("remove", updateRoutes);
-
-  if (config?.routes) {
-    initRoutes(config.routes, appDir).then((routeConfig) => {
-      Reflect.set(globalThis, "__ALEPH_ROUTE_CONFIG", routeConfig);
-      if (!Deno.env.get("ALEPH_CLI")) {
-        generateRoutesModule(routeConfig).catch((error) => log.error(error));
-      }
-    });
-  }
-
-  // apply user `watchFS` handler
-  if (typeof config?.devServer?.watchFS === "function") {
-    const { watchFS } = config.devServer;
-    emitter.on("*", (kind, { specifier }) => {
-      if (kind.startsWith("modify:")) {
-        watchFS("modify", specifier);
-      } else if (kind === "create" || kind === "remove") {
-        watchFS(kind, specifier);
-      }
-    });
-  }
-
-  log.info(`Watching files for changes...`);
-  watchFs(appDir);
-}
-
-/** generate the `_export.ts` module follows the routes config */
-export async function generateRoutesModule(routeConfig: RouteConfig, cwd = Deno.cwd()) {
-  const genFile = join(cwd, routeConfig.prefix, "_export.ts");
-
-  const routeFiles: [filename: string, pattern: string, exportNames: string[]][] = await Promise.all(
-    routeConfig.routes.map(async ([_, { filename, pattern }]) => {
-      const code = await Deno.readTextFile(join(cwd, filename));
-      const exportNames = await parseExportNames(filename, code);
-      return [filename, pattern.pathname, exportNames];
-    }),
-  );
-
-  const imports: string[] = [];
-  const revives: string[] = [];
-
-  routeFiles.forEach(([filename, pattern, exportNames], idx) => {
-    if (exportNames.length > 0) {
-      const importUrl = JSON.stringify("." + util.trimPrefix(filename, routeConfig.prefix));
-      imports.push(`import * as $${idx} from ${importUrl};`);
-      revives.push(`  ${JSON.stringify(pattern)}: $${idx},`);
-    }
-  });
-
-  if (revives.length > 0) {
-    await Deno.writeTextFile(
-      genFile,
-      [
-        "// Exports route modules for serverless env that doesn't support the dynamic imports.",
-        "// This module will be updated automaticlly in develoment mode, do NOT edit it manually.",
-        "",
-        ...imports,
-        "",
-        "export default {",
-        ...revives,
-        "}",
-      ].join("\n"),
-    );
-    log.debug(`${blue("routes.gen.ts")} generated`);
-  } else {
+  if (router.routes.length == 0) {
     try {
       await Deno.remove(genFile);
     } catch (error) {
@@ -149,5 +233,157 @@ export async function generateRoutesModule(routeConfig: RouteConfig, cwd = Deno.
         throw error;
       }
     }
+    return;
   }
+
+  const comments = [
+    "// Imports route modules for serverless env that doesn't support the dynamic import.",
+    "// This module will be updated automaticlly in develoment mode, do NOT edit it manually.",
+  ];
+  const imports: string[] = [];
+  const revives: string[] = [];
+
+  router.routes.forEach(([_, { filename, pattern }], idx) => {
+    const importUrl = JSON.stringify(
+      "." + util.trimPrefix(filename, router.prefix),
+    );
+    imports.push(`import * as $${idx} from ${importUrl};`);
+    revives.push(`  ${JSON.stringify(pattern.pathname)}: $${idx},`);
+  });
+
+  // stop previous esbuild watcher
+  const preResult: BuildResult | undefined = Reflect.get(
+    globalThis,
+    "__ALEPH_PREV_ESBUILD_RES",
+  );
+  if (preResult) {
+    Reflect.deleteProperty(globalThis, "__ALEPH_PREV_ESBUILD_RES");
+    preResult.stop?.();
+  }
+
+  if (withLoader) {
+    const input = [
+      ...imports,
+      "export default {",
+      ...revives,
+      "__ALEPH_DEP_GRAPH_PLACEHOLDER__:null,",
+      "}",
+    ].join("\n");
+    const depGraph = new DependencyGraph();
+    const write = async (build: BuildResult) => {
+      await Promise.all(build.outputFiles!.map(async (file) => {
+        if (file.path === genFile) {
+          await stealWriteTextFile(
+            genFile,
+            file.text.replace(
+              "__ALEPH_DEP_GRAPH_PLACEHOLDER__:null",
+              // deno-lint-ignore no-unused-vars
+              `depGraph:${JSON.stringify({ modules: depGraph.modules.map(({ version, ...module }) => module) })}`,
+            ),
+          );
+        }
+      }));
+    };
+    const result = await esbuild({
+      stdin: {
+        sourcefile: genFile,
+        contents: input,
+      },
+      outfile: genFile,
+      platform: "browser",
+      format: "esm",
+      target: ["esnext"],
+      bundle: true,
+      minify: true,
+      treeShaking: true,
+      // todo: enable sourcemap
+      sourcemap: false,
+      write: false,
+      banner: {
+        js: [
+          ...comments,
+          "// deno-fmt-ignore-file",
+          "// deno-lint-ignore-file",
+          "// @ts-nocheck",
+        ].join("\n"),
+      },
+      plugins: [{
+        name: "bundle-non-standard-modules",
+        setup(build) {
+          build.onResolve({ filter: /.*/ }, (args) => {
+            if (
+              args.path.startsWith(".") &&
+              loaders?.some((l) => l.test(args.path))
+            ) {
+              const specifier = "./" + relative(appDir, join(routesDir, args.path));
+              depGraph.mark(specifier, {});
+              if (args.importer.startsWith(".")) {
+                const importer = "./" + relative(appDir, join(routesDir, args.importer));
+                depGraph.mark(importer, { deps: [{ specifier }] });
+              }
+              return { path: args.path, namespace: "loader" };
+            }
+            return { path: args.path, external: true };
+          });
+          build.onLoad({ filter: /.*/, namespace: "loader" }, async (args) => {
+            const loader = loaders?.find((l) => l.test(args.path));
+            if (loader) {
+              const fullpath = join(routesDir, args.path);
+              const specifier = "./" + relative(appDir, fullpath);
+              const [importMap, jsxConfig, source] = await Promise.all([
+                getImportMap(appDir),
+                getJSXConfig(appDir),
+                Deno.readTextFile(fullpath),
+              ]);
+              const { code, lang, inlineCSS } = await loader.load(specifier, source, {
+                importMap,
+                jsxConfig,
+                ssr: true,
+              });
+              if (inlineCSS) {
+                depGraph.mark(specifier, { inlineCSS });
+              }
+              return {
+                contents: code,
+                loader: lang,
+                watchFiles: [fullpath],
+              };
+            }
+            throw new Error(`Loader not found for ${args.path}`);
+          });
+        },
+      }],
+      watch: {
+        onRebuild(error, result) {
+          if (error) log.warn("[esbuild] watch build failed:", error);
+          else write(result!);
+        },
+      },
+    });
+    Reflect.set(globalThis, "__ALEPH_PREV_ESBUILD_RES", result);
+    await write(result);
+  } else {
+    const empty = "";
+    const code = [
+      ...comments,
+      empty,
+      ...imports,
+      empty,
+      "export default {",
+      ...revives,
+      "};",
+      empty,
+    ].join("\n");
+    await stealWriteTextFile(genFile, code);
+  }
+}
+
+async function stealWriteTextFile(filename: string, content: string) {
+  if (await existsFile(filename)) {
+    const oldContent = await Deno.readTextFile(filename);
+    if (oldContent === content) {
+      return;
+    }
+  }
+  await Deno.writeTextFile(filename, content);
 }

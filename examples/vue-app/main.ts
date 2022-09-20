@@ -1,8 +1,3 @@
-import { App, createSSRApp } from "aleph/vue";
-import Header from "./components/Header.vue";
+import { bootstrap } from "aleph/vue";
 
-const app = createSSRApp(App);
-
-app.component("Header", Header);
-
-app.mount("#root", true);
+bootstrap({ hydrate: true });

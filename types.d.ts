@@ -1,51 +1,5 @@
-/** Information about the connection a request arrived on. */
-interface ConnInfo {
-  /** The local address of the connection. */
-  readonly localAddr: Deno.Addr;
-  /** The remote address of the connection. */
-  readonly remoteAddr: Deno.Addr;
-}
-
-interface CookieOptions {
-  expires?: number | Date;
-  maxAge?: number;
-  domain?: string;
-  path?: string;
-  httpOnly?: boolean;
-  secure?: boolean;
-  sameSite?: "lax" | "strict" | "none";
-}
-
-interface Cookies {
-  get(key: string): string | undefined;
-  set(key: string, value: string, options?: CookieOptions): void;
-  delete(key: string, options?: CookieOptions): void;
-}
-
-interface HTMLRewriterHandlers {
-  element?: (element: import("https://deno.land/x/lol_html@0.0.3/types.d.ts").Element) => void;
-  comments?: (comment: import("https://deno.land/x/lol_html@0.0.3/types.d.ts").Comment) => void;
-  text?: (text: import("https://deno.land/x/lol_html@0.0.3/types.d.ts").TextChunk) => void;
-}
-
-interface HTMLRewriter {
-  on: (selector: string, handlers: HTMLRewriterHandlers) => void;
-}
-
-interface Session<T> {
-  store: T | undefined;
-  update(store: T | ((store: T | undefined) => T)): Promise<string>;
-  end(): Promise<string>;
-}
-
-declare interface Context extends Record<string, unknown> {
-  readonly connInfo: ConnInfo;
-  readonly params: Record<string, string>;
-  readonly headers: Headers;
-  readonly cookies: Cookies;
-  readonly htmlRewriter: HTMLRewriter;
-  getSession<T extends Record<string, unknown> = Record<string, unknown>>(): Promise<Session<T>>;
-}
+declare type Context = import("./server/types.ts").Context;
+declare type Middleware = import("./server/types.ts").Middleware;
 
 declare type ResponseLike =
   | Response
@@ -59,32 +13,32 @@ declare type ResponseLike =
   | Array<unknown>
   | null;
 
-declare interface Data<GetDataType = ResponseLike, ActionDataType = ResponseLike> {
+declare interface Data<DataType = ResponseLike, ActionDataType = ResponseLike> {
+  defer?: boolean;
   cacheTtl?: number;
   any?(request: Request, context: Context): Promise<Response | void> | Response | void;
-  get?(
-    request: Request,
-    context: Context,
-  ): Promise<GetDataType> | GetDataType;
+  get?(request: Request, context: Context): Promise<DataType> | DataType;
   post?(request: Request, context: Context): Promise<ActionDataType> | ActionDataType;
   put?(request: Request, context: Context): Promise<ActionDataType> | ActionDataType;
   patch?(request: Request, context: Context): Promise<ActionDataType> | ActionDataType;
   delete?(request: Request, context: Context): Promise<ActionDataType> | ActionDataType;
 }
 
-declare interface Middleware {
-  readonly name?: string;
-  readonly eager?: boolean;
-  fetch(
-    request: Request,
-    context: Context,
-  ): Promise<Response | (() => void) | void> | Response | (() => void) | void;
-}
+declare const __aleph: {
+  // deno-lint-ignore no-explicit-any
+  importRouteModule(url: string): Promise<any>;
+  // deno-lint-ignore no-explicit-any
+  getRouteModule(url: string): any;
+};
 
 declare interface ImportMeta {
+  /** Aleph.js HMR `hot` API. */
   readonly hot?: {
-    watchFile: (filename: string, callback: () => void) => () => void;
-    accept: (callback?: (module: unknown) => void) => void;
-    decline: (delay?: number) => void;
+    readonly data: Record<string, unknown>;
+    accept<T = Record<string, unknown>>(callback?: (module: T) => void): void;
+    decline(): void;
+    dispose: (callback: (data: Record<string, unknown>) => void) => void;
+    invalidate(): void;
+    watchFile(filename: string, callback: () => void): () => void;
   };
 }
